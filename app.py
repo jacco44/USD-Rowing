@@ -37,6 +37,7 @@ def is_valid_usd_email(email: str) -> bool:
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
+app.jinja_env.globals["format_split"] = pacing.format_split
 
 TRACKER_TABLES_MSG = (
     "Tracker tables are missing. Apply schema.sql to your MySQL database to enable goals and workouts."
