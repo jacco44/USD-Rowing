@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}USD Men's Rowing{% endblock %}</title>
+  <link rel="icon" href="{{ url_for('static', filename='nav_logo.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/tracker.css') }}">
+</head>
+<body class="app-shell" {% if celebrate %}data-celebrate="{{ celebrate }}"{% endif %}>
+  <div class="app-bg" aria-hidden="true"></div>
+  <header class="app-header">
+    <a class="site-logo app-logo" href="{{ url_for('dashboard') }}">
+      <img src="{{ url_for('static', filename='nav_logo.svg') }}" alt="" width="160" height="48">
+    </a>
+    <nav class="app-nav" aria-label="Main">
+      <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      <a href="{{ url_for('goals_list') }}">Goals</a>
+      <a href="{{ url_for('workout_new') }}">Log workout</a>
+      <a href="{{ url_for('workouts_list') }}">History</a>
+      <a href="{{ url_for('leaderboard') }}">Leaderboard</a>
+      <a href="{{ url_for('logout') }}" class="nav-muted">Log out</a>
+    </nav>
+  </header>
+  <main class="app-main">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-strip">
+          {% for category, message in messages %}
+            <p class="flash flash-{{ category }}">{{ message }}</p>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+  <script src="{{ url_for('static', filename='js/tracker.js') }}" defer></script>
+</body>
+</html>

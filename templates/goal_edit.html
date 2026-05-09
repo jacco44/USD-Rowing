@@ -1,0 +1,33 @@
+{% extends "layout_app.html" %}
+{% block title %}Edit goal · USD Men's Rowing{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Edit goal</h1>
+  <p class="page-sub">Update your target split or deadline.</p>
+</div>
+
+<form class="panel glass form-panel" method="post">
+  <label class="field">
+    <span class="field-label">Label (optional)</span>
+    <input type="text" name="title" placeholder="Spring speed piece" value="{{ goal.title or '' }}">
+  </label>
+  <label class="field">
+    <span class="field-label">Target 2k time</span>
+    <input type="text" name="target_2k" required placeholder="6:15.0"
+           value="{{ format_split(goal.target_seconds|float) }}" autocomplete="off">
+  </label>
+  <label class="field">
+    <span class="field-label">Target date</span>
+    <input type="date" name="target_date" required
+           value="{{ goal.target_date }}" min="{{ today_iso }}">
+  </label>
+  <label class="field checkbox-field">
+    <input type="checkbox" name="is_public" value="1" {% if goal.is_public %}checked{% endif %}>
+    <span>Show my scores on the team leaderboard</span>
+  </label>
+  <div class="form-actions">
+    <button type="submit" class="btn-primary">Save changes</button>
+    <a href="{{ url_for('goals_list') }}" class="btn-link">Cancel</a>
+  </div>
+</form>
+{% endblock %}

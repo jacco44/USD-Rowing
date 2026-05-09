@@ -1,0 +1,31 @@
+{% extends "layout_app.html" %}
+{% block title %}New goal · USD Men's Rowing{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">New goal 🎯</h1>
+  <p class="page-sub">Example: hit a <strong>6:15</strong> 2k by your race date. Every extra meter moves the needle.</p>
+</div>
+
+<form class="panel glass form-panel" method="post" action="{{ url_for('goal_new') }}">
+  <label class="field">
+    <span class="field-label">Label (optional)</span>
+    <input type="text" name="title" placeholder="e.g. Spring 2k test">
+  </label>
+  <label class="field">
+    <span class="field-label">Target 2k time</span>
+    <input type="text" name="target_2k" required placeholder="6:15.0" autocomplete="off">
+  </label>
+  <label class="field">
+    <span class="field-label">Target date</span>
+    <input type="date" name="target_date" required value="{{ today_iso }}" min="{{ today_iso }}">
+  </label>
+  <label class="field checkbox-field">
+    <input type="checkbox" name="is_public" value="1" checked>
+    <span>Show my scores on the team leaderboard</span>
+  </label>
+  <div class="form-actions">
+    <button type="submit" class="btn-primary">Save goal 🚣</button>
+    <a href="{{ url_for('goals_list') }}" class="btn-link">Cancel</a>
+  </div>
+</form>
+{% endblock %}

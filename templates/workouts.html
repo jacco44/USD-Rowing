@@ -1,0 +1,61 @@
+{% extends "layout_app.html" %}
+{% block title %}Workout history · USD Men's Rowing{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Workout history</h1>
+  <p class="page-sub">Each split is scored 1–5 against the pacing chart for your goal.</p>
+</div>
+
+<p class="toolbar"><a class="btn-primary" href="{{ url_for('workout_new') }}">+ Log workout</a></p>
+
+{% if workouts %}
+<div class="panel glass" style="padding:0;overflow:hidden;">
+  <table class="data-table" style="margin:0">
+    <thead>
+      <tr>
+        <th style="padding-left:1.1rem">Score</th>
+        <th>Date</th>
+        <th>Avg /500m</th>
+        <th>Target /500m</th>
+        <th>Δ</th>
+        <th>Type</th>
+        <th>Goal</th>
+        <th>Label</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for w in workouts %}
+      <tr>
+        <td style="padding-left:1.1rem">
+          <span class="tier-pill tier-{{ w.pace_rating }}" title="{{ rating_label(w.pace_rating) }}">
+            {{ w.pace_rating }}
+          </span>
+        </td>
+        <td style="color:var(--text-muted);font-size:0.84rem">{{ w.workout_date }}</td>
+        <td style="font-weight:700;font-variant-numeric:tabular-nums">{{ format_split(w.avg_split_seconds|float) }}</td>
+        <td style="font-variant-numeric:tabular-nums;color:var(--text-muted)">
+          {% if w.expected_split_seconds is not none %}{{ format_split(w.expected_split_seconds|float) }}{% else %}—{% endif %}
+        </td>
+        <td class="delta-{% if w.split_delta_seconds is not none and w.split_delta_seconds <= 0 %}pos{% else %}neg{% endif %}">
+          {% if w.split_delta_seconds is not none %}
+            {% if w.split_delta_seconds > 0 %}+{% endif %}{{ "%.1f"|format(w.split_delta_seconds|float) }}s
+          {% else %}—{% endif %}
+        </td>
+        <td style="color:var(--text-muted);font-size:0.84rem">
+          {{ workout_types[w.workout_key].header if w.workout_key in workout_types else w.workout_key }}
+        </td>
+        <td style="font-size:0.84rem;max-width:10rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+          {{ w.goal_title or '—' }}
+        </td>
+        <td style="color:var(--text-muted);font-size:0.84rem">{{ w.label or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel glass empty-panel">
+  <p class="empty-hint">No workouts logged yet. <a href="{{ url_for('workout_new') }}">Add an erg session</a>.</p>
+</div>
+{% endif %}
+{% endblock %}

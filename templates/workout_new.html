@@ -1,0 +1,60 @@
+{% extends "layout_app.html" %}
+{% block title %}Log workout · USD Men's Rowing{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Log workout</h1>
+  <p class="page-sub">Enter average split /500m from the erg. We compare it to the chart row interpolated from your goal 2k time.</p>
+</div>
+
+{% if not goals %}
+<p class="empty-hint glass empty-panel">
+  Add a <a href="{{ url_for('goal_new') }}">goal</a> first — scoring uses your target 2k and the USD pacing chart.
+</p>
+{% else %}
+<form class="panel glass form-panel" method="post" action="{{ url_for('workout_new') }}">
+  <label class="field">
+    <span class="field-label">Goal</span>
+    <select name="goal_id" required>
+      {% for g in goals %}
+      <option value="{{ g.id }}">{{ g.title or ('Goal ' ~ g.id) }} — {{ format_split(g.target_seconds|float) }} by {{ g.target_date }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="field">
+    <span class="field-label">Workout type (chart column)</span>
+    <select name="workout_key">
+      {% for key, meta in workout_types.items() %}
+      <option value="{{ key }}" {% if key == default_key %}selected{% endif %}>{{ meta.header }} · Zone {{ meta.zone }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label class="field">
+    <span class="field-label">Average split /500m</span>
+    <input type="text" name="avg_split" required placeholder="2:08.5">
+  </label>
+  <label class="field">
+    <span class="field-label">Date</span>
+    <input type="date" name="workout_date" value="{{ today_iso }}" required>
+  </label>
+  <label class="field">
+    <span class="field-label">Label (optional)</span>
+    <input type="text" name="label" placeholder="Morning UT2">
+  </label>
+  <div class="field-row">
+    <label class="field">
+      <span class="field-label">Duration (sec, optional)</span>
+      <input type="number" name="duration_seconds" min="0" placeholder="2700">
+    </label>
+    <label class="field">
+      <span class="field-label">Distance (m, optional)</span>
+      <input type="number" name="distance_meters" min="0" placeholder="10000">
+    </label>
+  </div>
+  <label class="field">
+    <span class="field-label">Notes</span>
+    <textarea name="notes" rows="2" placeholder="Drag factor, how you felt…"></textarea>
+  </label>
+  <button type="submit" class="btn-primary">Save &amp; score</button>
+</form>
+{% endif %}
+{% endblock %}

@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>USD Men's Rowing — Sign in</title>
+  <title>USD Men's Rowing — Register</title>
   <link rel="icon" href="{{ url_for('static', filename='nav_logo.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
@@ -12,9 +12,9 @@
     <img src="{{ url_for('static', filename='nav_logo.svg') }}" alt="" width="160" height="48">
   </a>
   <div class="wrapper">
-    <form method="post" action="{{ url_for('login') }}">
+    <form method="post" action="{{ url_for('register') }}">
       <h2>University of San Diego</h2>
-      <p class="tagline">Men's Rowing — member sign in</p>
+      <p class="tagline">Men's Rowing — create your account</p>
       {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
           <div class="flash-list">
@@ -29,19 +29,16 @@
         <label for="username">USD email (@sandiego.edu)</label>
       </div>
       <div class="input-field">
-        <input type="password" name="password" id="password" autocomplete="current-password" required>
-        <label for="password">Password</label>
+        <input type="password" name="password" id="password" autocomplete="new-password" required minlength="{{ min_password_length }}">
+        <label for="password">Password (min. {{ min_password_length }} characters)</label>
       </div>
-      <div class="forget">
-        <label for="remember">
-          <input type="checkbox" id="remember" name="remember">
-          <p>Remember me</p>
-        </label>
-        <a href="#">Forgot password?</a>
+      <div class="input-field">
+        <input type="password" name="password_confirm" id="password_confirm" autocomplete="new-password" required minlength="{{ min_password_length }}">
+        <label for="password_confirm">Confirm password</label>
       </div>
-      <button type="submit">Log In</button>
+      <button type="submit">Create account</button>
       <div class="register">
-        <p>New rower? <a href="{{ url_for('register') }}">Create an account</a></p>
+        <p>Already have an account? <a href="{{ url_for('login') }}">Sign in</a></p>
       </div>
     </form>
   </div>

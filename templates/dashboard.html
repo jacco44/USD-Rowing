@@ -1,0 +1,97 @@
+{% extends "layout_app.html" %}
+{% block title %}Dashboard · USD Men's Rowing{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Extra meters HQ 🚣</h1>
+  <p class="page-sub">University of San Diego Men's Rowing · <strong>{{ email }}</strong></p>
+</div>
+
+<section class="stat-grid" aria-label="Summary">
+  <article class="stat-card glass">
+    <span class="stat-label">Active goals</span>
+    <span class="stat-value">{{ stats.goals }}</span>
+    <span class="stat-hint"><a href="{{ url_for('goals_list') }}" class="stat-hint-link">View all →</a></span>
+  </article>
+  <article class="stat-card glass">
+    <span class="stat-label">Workouts this week</span>
+    <span class="stat-value">{{ stats.workouts_week }}</span>
+    <span class="stat-hint"><a href="{{ url_for('workouts_list') }}" class="stat-hint-link">Full history →</a></span>
+  </article>
+  <article class="stat-card glass">
+    <span class="stat-label">Avg pace score (14 days)</span>
+    <span class="stat-value">{% if stats.avg_rating is not none %}{{ "%.2f"|format(stats.avg_rating) }}{% else %}—{% endif %}</span>
+    <span class="stat-hint">
+      {% if stats.avg_rating is not none %}
+        {% if stats.avg_rating >= 4.5 %}<span class="tier-pill tier-5">On fire 🔥</span>
+        {% elif stats.avg_rating >= 3.5 %}<span class="tier-pill tier-4">Strong work</span>
+        {% elif stats.avg_rating >= 2.5 %}<span class="tier-pill tier-3">Solid base</span>
+        {% else %}<span class="tier-pill tier-2">Keep grinding</span>{% endif %}
+      {% else %}1–5 vs chart target{% endif %}
+    </span>
+  </article>
+  {% if stats.best_rating_week is not none %}
+  <article class="stat-card glass">
+    <span class="stat-label">Best score this week</span>
+    <span class="stat-value tier-{{ stats.best_rating_week }}" style="color:inherit">{{ stats.best_rating_week }}</span>
+    <span class="stat-hint"><span class="tier-pill tier-{{ stats.best_rating_week }}">{{ rating_label(stats.best_rating_week) }}</span></span>
+  </article>
+  {% endif %}
+</section>
+
+{% if not recent_workouts and stats.goals == 0 %}
+<section class="panel glass" style="border-left: 3px solid #3b82f6; padding: 1.4rem 1.5rem;">
+  <h2 style="font-size:1.1rem;margin-bottom:0.5rem;color:#fff;">👋 Welcome! Let's get started.</h2>
+  <p style="color:var(--text-muted);font-size:0.95rem;margin-bottom:1rem;">Set your first 2k goal and start logging extra meters. Every split counts.</p>
+  <a class="btn-primary" href="{{ url_for('goal_new') }}">Set your first goal →</a>
+</section>
+{% endif %}
+
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;">
+
+<section class="panel glass">
+  <div class="panel-head">
+    <h2>Recent workouts</h2>
+    <a class="btn-link" href="{{ url_for('workout_new') }}">Log another →</a>
+  </div>
+  {% if recent_workouts %}
+  <ul class="mini-list">
+    {% for w in recent_workouts %}
+    <li class="mini-row">
+      <span class="tier-pill tier-{{ w.pace_rating }}" title="{{ rating_label(w.pace_rating) }}">{{ w.pace_rating }}</span>
+      <span class="mini-date">{{ w.workout_date }}</span>
+      <span class="mini-split">{{ format_split(w.avg_split_seconds|float) }}<span style="font-size:0.75rem;color:var(--text-muted);font-weight:400">/500m</span></span>
+      {% if w.label %}<span class="mini-label">{{ w.label }}</span>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="panel-foot"><a href="{{ url_for('workouts_list') }}">Full history →</a></p>
+  {% else %}
+  <p class="empty-hint">No workouts yet — <a href="{{ url_for('workout_new') }}">log your first erg piece</a>.</p>
+  {% endif %}
+</section>
+
+<section class="panel glass">
+  <div class="panel-head">
+    <h2>🏅 Leaderboard</h2>
+    <span class="panel-meta">Public goals · 30 days</span>
+  </div>
+  {% if leaderboard_preview %}
+  <ol class="lb-compact">
+    {% for row in leaderboard_preview %}
+    <li>
+      <span class="lb-rank">
+        {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
+      </span>
+      <span class="lb-name">{{ row.username.split('@')[0] }}</span>
+      <span class="lb-score tier-{{ (row.ar|float)|round|int }}">{{ "%.2f"|format(row.ar|float) }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  <p class="panel-foot"><a href="{{ url_for('leaderboard') }}">Full leaderboard →</a></p>
+  {% else %}
+  <p class="empty-hint">No public scores yet — set a <a href="{{ url_for('goal_new') }}">public goal</a> and log workouts.</p>
+  {% endif %}
+</section>
+
+</div>
+{% endblock %}

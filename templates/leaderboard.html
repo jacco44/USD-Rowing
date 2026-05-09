@@ -1,0 +1,48 @@
+{% extends "layout_app.html" %}
+{% block title %}Leaderboard · USD Men's Rowing{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">🏆 Leaderboard</h1>
+  <p class="page-sub">Average pace score (1–5) over the last 30 days · only workouts tied to <strong>public</strong> goals.</p>
+</div>
+
+{% if rows %}
+<div class="panel glass" style="padding:0;overflow:hidden;">
+  <table class="data-table leaderboard-table" style="margin:0">
+    <thead>
+      <tr>
+        <th style="padding-left:1.25rem">#</th>
+        <th>Athlete</th>
+        <th>Avg score</th>
+        <th>Workouts</th>
+        <th>Last log</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr class="rank-row rank-{{ loop.index }}">
+        <td class="rank-cell" style="padding-left:1.25rem">
+          {% if loop.index == 1 %}<span class="medal gold">1</span>
+          {% elif loop.index == 2 %}<span class="medal silver">2</span>
+          {% elif loop.index == 3 %}<span class="medal bronze">3</span>
+          {% else %}<span class="rank-num">{{ loop.index }}</span>{% endif %}
+        </td>
+        <td style="font-weight:600">{{ row.username.split('@')[0] }}</td>
+        <td>
+          <span class="tier-pill tier-{{ (row.avg_rating|float)|round|int }}">
+            {{ "%.2f"|format(row.avg_rating|float) }}
+          </span>
+        </td>
+        <td>{{ row.workouts }}</td>
+        <td style="color:var(--text-muted);font-size:0.84rem">{{ row.last_workout }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel glass empty-panel">
+  <p class="empty-hint">No ranked athletes yet this month. Set a <a href="{{ url_for('goal_new') }}">public goal</a> and start logging!</p>
+</div>
+{% endif %}
+{% endblock %}
