@@ -1,8 +1,9 @@
 """Serve the USD-Rowing login page with MySQL-backed authentication."""
 
+import calendar
 import os
 import secrets
-from datetime import date
+from datetime import date, datetime, timedelta
 from datetime import date as date_class  # alias used in goals_list for clarity
 from functools import wraps
 
@@ -746,6 +747,114 @@ def leaderboard():
             conn.close()
 
     return render_template("leaderboard.html", rows=rows)
+
+
+def _row_workout_date_as_date(value) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value)[:10])
+
+
+@login_required
+@app.route("/calendar")
+def workout_calendar():
+    user = session["user"]
+    today = date.today()
+    y = request.args.get("year", type=int) or today.year
+    m = request.args.get("month", type=int) or today.month
+    if m < 1 or m > 12 or y < 1990 or y > 2105:
+        y, m = today.year, today.month
+    try:
+        first = date(y, m, 1)
+    except ValueError:
+        y, m = today.year, today.month
+        first = date(y, m, 1)
+
+    if m == 12:
+        last = date(y, 12, 31)
+    else:
+        last = date(y, m + 1, 1) - timedelta(days=1)
+
+    if m == 1:
+        prev_y, prev_m = y - 1, 12
+    else:
+        prev_y, prev_m = y, m - 1
+    if m == 12:
+        next_y, next_m = y + 1, 1
+    else:
+        next_y, next_m = y, m + 1
+
+    scores: dict[date, int] = {}
+    tables_ok = True
+    conn = get_db_connection()
+    if conn is None:
+        flash("Unable to reach the database.", "error")
+        tables_ok = False
+    else:
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT workout_date, MIN(pace_rating) AS day_tier
+                FROM erg_workouts
+                WHERE username = %s AND workout_date >= %s AND workout_date <= %s
+                GROUP BY workout_date
+                """,
+                (user, first, last),
+            )
+            for row in cur.fetchall():
+                dkey = _row_workout_date_as_date(row["workout_date"])
+                t = int(row["day_tier"])
+                scores[dkey] = max(1, min(5, t))
+            cur.close()
+        except mysql.connector.Error as err:
+            if getattr(err, "errno", None) != 1146:
+                raise
+            flash(TRACKER_TABLES_MSG, "error")
+            tables_ok = False
+        finally:
+            conn.close()
+
+    cal_weeks: list[list[dict]] = []
+    for week in calendar.monthcalendar(y, m):
+        wrow: list[dict] = []
+        for d in week:
+            if d == 0:
+                wrow.append({"pad": True})
+                continue
+            cell_dt = date(y, m, d)
+            has_workout = tables_ok and cell_dt in scores
+            tier = scores[cell_dt] if has_workout else 4
+            if has_workout:
+                tip = f"{cell_dt.isoformat()} — {tier} · {pacing.rating_label(tier)}"
+            else:
+                tip = f"{cell_dt.isoformat()} — Rest / no data ({pacing.rating_label(4)} color)"
+            wrow.append(
+                {
+                    "pad": False,
+                    "day": d,
+                    "tier": tier,
+                    "title": tip,
+                    "is_today": cell_dt == today,
+                }
+            )
+        cal_weeks.append(wrow)
+
+    month_title = first.strftime("%B %Y")
+    return render_template(
+        "calendar.html",
+        cal_weeks=cal_weeks,
+        month_title=month_title,
+        cal_year=y,
+        cal_month=m,
+        prev_y=prev_y,
+        prev_m=prev_m,
+        next_y=next_y,
+        next_m=next_m,
+        rating_label=pacing.rating_label,
+    )
 
 
 @app.route("/logout")
