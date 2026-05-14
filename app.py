@@ -1,16 +1,19 @@
 """Serve the USD-Rowing login page with MySQL-backed authentication."""
 
-import calendar
+import json
 import os
+import re
 import secrets
 from datetime import date, datetime, timedelta
 from datetime import date as date_class  # alias used in goals_list for clarity
 from functools import wraps
+from pathlib import Path
 
 import mysql.connector
-from flask import Flask, flash, redirect, render_template, request, session, url_for
+from flask import Flask, flash, redirect, render_template, request, send_file, session, url_for
 from werkzeug.security import check_password_hash, generate_password_hash
 
+import ocr_processor
 import pacing
 from database import get_db_connection
 
@@ -28,7 +31,12 @@ def verify_password(stored: str | None, provided: str) -> bool:
 
 USD_EMAIL_SUFFIX = "@sandiego.edu"
 MIN_PASSWORD_LENGTH = 8
-REGISTER_TEMPLATE_CTX = {"min_password_length": MIN_PASSWORD_LENGTH}
+# Typical %max-HR zone ceilings for max HR ~190 (college-aged athlete); users can edit.
+DEFAULT_HR_ZONE_MAX_BPM = (114, 133, 152, 171, 190)
+REGISTER_TEMPLATE_CTX = {
+    "min_password_length": MIN_PASSWORD_LENGTH,
+    "hr_zones_default": DEFAULT_HR_ZONE_MAX_BPM,
+}
 
 
 def is_valid_usd_email(email: str) -> bool:
@@ -39,6 +47,11 @@ def is_valid_usd_email(email: str) -> bool:
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
 app.jinja_env.globals["format_split"] = pacing.format_split
+
+
+@app.context_processor
+def inject_admin_flag():
+    return {"is_admin": is_admin()}
 
 TRACKER_TABLES_MSG = (
     "Tracker tables are missing. Apply schema.sql to your MySQL database to enable goals and workouts."
@@ -60,6 +73,48 @@ def _ensure_goal_completion_column(conn) -> None:
         conn.rollback()
 
 
+def _ensure_user_profile_columns(conn) -> None:
+    """Add optional athlete profile columns to rowing_users if missing."""
+    alters = (
+        "ALTER TABLE rowing_users ADD COLUMN two_k_seconds INT NULL",
+        "ALTER TABLE rowing_users ADD COLUMN hr_zone1_max SMALLINT UNSIGNED NULL",
+        "ALTER TABLE rowing_users ADD COLUMN hr_zone2_max SMALLINT UNSIGNED NULL",
+        "ALTER TABLE rowing_users ADD COLUMN hr_zone3_max SMALLINT UNSIGNED NULL",
+        "ALTER TABLE rowing_users ADD COLUMN hr_zone4_max SMALLINT UNSIGNED NULL",
+        "ALTER TABLE rowing_users ADD COLUMN hr_zone5_max SMALLINT UNSIGNED NULL",
+    )
+    for stmt in alters:
+        try:
+            cur = conn.cursor()
+            cur.execute(stmt)
+            conn.commit()
+            cur.close()
+        except mysql.connector.Error as err:
+            if getattr(err, "errno", None) != 1060:
+                raise
+            conn.rollback()
+
+
+def _registration_form_values() -> dict[str, str]:
+    """Sticky values for the register form (defaults on GET, submitted on POST)."""
+    z = DEFAULT_HR_ZONE_MAX_BPM
+
+    def zone_field(i: int) -> str:
+        key = f"hr_zone{i}_max"
+        if request.method == "POST":
+            return (request.form.get(key) or "").strip()
+        return str(z[i - 1])
+
+    return {
+        "two_k": (request.form.get("two_k", "") or "").strip() if request.method == "POST" else "",
+        "hr_zone1_max": zone_field(1),
+        "hr_zone2_max": zone_field(2),
+        "hr_zone3_max": zone_field(3),
+        "hr_zone4_max": zone_field(4),
+        "hr_zone5_max": zone_field(5),
+    }
+
+
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
@@ -68,6 +123,49 @@ def login_required(view):
         return view(*args, **kwargs)
 
     return wrapped
+
+
+# Admin access: if ADMIN_EMAILS env var is set (comma-separated), only those
+# accounts can reach /admin/*. If the variable is empty, any logged-in user
+# can access admin (suitable for a small trusted team).
+_ADMIN_EMAILS: set[str] = {
+    e.strip().lower()
+    for e in os.environ.get("ADMIN_EMAILS", "").split(",")
+    if e.strip()
+}
+
+
+def is_admin() -> bool:
+    user = session.get("user", "")
+    return bool(user and (not _ADMIN_EMAILS or user.lower() in _ADMIN_EMAILS))
+
+
+def admin_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("user"):
+            return redirect(url_for("login"))
+        if not is_admin():
+            flash("Admin access required.", "error")
+            return redirect(url_for("dashboard"))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def _ensure_whatsapp_phone_column(conn) -> None:
+    """Add whatsapp_phone to rowing_users if missing (graceful migration)."""
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "ALTER TABLE rowing_users ADD COLUMN whatsapp_phone VARCHAR(30) NULL"
+        )
+        conn.commit()
+        cur.close()
+    except mysql.connector.Error as err:
+        if getattr(err, "errno", None) != 1060:  # 1060 = Duplicate column
+            raise
+        conn.rollback()
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -123,21 +221,77 @@ def register():
 
         if not is_valid_usd_email(username):
             flash("Registration requires a @sandiego.edu email address.", "error")
-            return render_template("register.html", **REGISTER_TEMPLATE_CTX), 400
+            return render_template(
+                "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+            ), 400
 
         if len(password) < MIN_PASSWORD_LENGTH:
             flash(f"Password must be at least {MIN_PASSWORD_LENGTH} characters.", "error")
-            return render_template("register.html", **REGISTER_TEMPLATE_CTX), 400
+            return render_template(
+                "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+            ), 400
 
         if password != password_confirm:
             flash("Passwords do not match.", "error")
-            return render_template("register.html", **REGISTER_TEMPLATE_CTX), 400
+            return render_template(
+                "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+            ), 400
+
+        two_k_raw = (request.form.get("two_k") or "").strip()
+        two_k_seconds = None
+        if two_k_raw:
+            try:
+                two_k_seconds = int(round(pacing.parse_goal_2k(two_k_raw)))
+            except ValueError:
+                flash("Enter a valid current 2k time (for example 6:45.0), or leave it blank.", "error")
+                return render_template(
+                    "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+                ), 400
+            if two_k_seconds < 300 or two_k_seconds > 1500:
+                flash("2k time looks unrealistic; use mm:ss between about 5:00 and 25:00.", "error")
+                return render_template(
+                    "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+                ), 400
+
+        zone_vals: list[int] = []
+        for i in range(1, 6):
+            raw = (request.form.get(f"hr_zone{i}_max") or "").strip()
+            if not raw:
+                flash("Please enter all five heart-rate zone ceilings (bpm), or use the suggested defaults.", "error")
+                return render_template(
+                    "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+                ), 400
+            try:
+                zone_vals.append(int(raw))
+            except ValueError:
+                flash("Heart-rate zones must be whole numbers (beats per minute).", "error")
+                return render_template(
+                    "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+                ), 400
+
+        for z in zone_vals:
+            if z < 50 or z > 230:
+                flash("Each zone ceiling should be between 50 and 230 bpm.", "error")
+                return render_template(
+                    "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+                ), 400
+
+        if not all(zone_vals[i] < zone_vals[i + 1] for i in range(4)):
+            flash("Heart-rate zones should increase from zone 1 through zone 5.", "error")
+            return render_template(
+                "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+            ), 400
+
+        wa_phone_raw = (request.form.get("whatsapp_phone") or "").strip()
+        wa_phone = re.sub(r"\D", "", wa_phone_raw) or None
 
         email_norm = username.lower()
         conn = get_db_connection()
         if conn is None:
             flash("Unable to reach the database. Please try again later.", "error")
-            return render_template("register.html", **REGISTER_TEMPLATE_CTX), 503
+            return render_template(
+                "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+            ), 503
 
         cur = None
         try:
@@ -148,12 +302,35 @@ def register():
             )
             if cur.fetchone():
                 flash("An account with this email already exists.", "error")
-                return render_template("register.html", **REGISTER_TEMPLATE_CTX), 409
+                return render_template(
+                    "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+                ), 409
 
-            cur.execute(
-                "INSERT INTO rowing_users (username, password) VALUES (%s, %s)",
-                (email_norm, generate_password_hash(password)),
+            _ensure_whatsapp_phone_column(conn)
+            insert_profile = (
+                "INSERT INTO rowing_users (username, password, two_k_seconds, "
+                "hr_zone1_max, hr_zone2_max, hr_zone3_max, hr_zone4_max, hr_zone5_max, whatsapp_phone) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
             )
+            insert_params = (
+                email_norm,
+                generate_password_hash(password),
+                two_k_seconds,
+                zone_vals[0],
+                zone_vals[1],
+                zone_vals[2],
+                zone_vals[3],
+                zone_vals[4],
+                wa_phone,
+            )
+            try:
+                cur.execute(insert_profile, insert_params)
+            except mysql.connector.Error as ins_err:
+                if getattr(ins_err, "errno", None) == 1054:
+                    _ensure_user_profile_columns(conn)
+                    cur.execute(insert_profile, insert_params)
+                else:
+                    raise
             conn.commit()
             session["user"] = email_norm
             flash("Welcome! Your account is ready.", "success")
@@ -162,13 +339,17 @@ def register():
             conn.rollback()
             print(f"Registration database error: {err}")
             flash("Could not complete registration. Please try again.", "error")
-            return render_template("register.html", **REGISTER_TEMPLATE_CTX), 500
+            return render_template(
+                "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+            ), 500
         finally:
             if cur is not None:
                 cur.close()
             conn.close()
 
-    return render_template("register.html", **REGISTER_TEMPLATE_CTX)
+    return render_template(
+        "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+    )
 
 
 @login_required
@@ -388,6 +569,10 @@ def workouts_list():
         finally:
             conn.close()
 
+    today = date.today()
+    cal_y, cal_m, cal_first, cal_last = _calendar_month_bounds(request, today)
+    cal_events = _workout_calendar_events_for_month(user, cal_first, cal_last)
+
     chart = pacing.load_chart()
     return render_template(
         "workouts.html",
@@ -395,6 +580,10 @@ def workouts_list():
         workout_types=chart.get("workout_types", {}),
         format_split=pacing.format_split,
         rating_label=pacing.rating_label,
+        events_json=json.dumps(cal_events),
+        cal_year=cal_y,
+        cal_month=cal_m,
+        cal_date_iso=cal_first.isoformat(),
     )
 
 
@@ -757,13 +946,18 @@ def _row_workout_date_as_date(value) -> date:
     return date.fromisoformat(str(value)[:10])
 
 
-@login_required
-@app.route("/calendar")
-def workout_calendar():
-    user = session["user"]
-    today = date.today()
-    y = request.args.get("year", type=int) or today.year
-    m = request.args.get("month", type=int) or today.month
+_WORKOUT_CAL_TIER_COLORS = {
+    5: ("#22c55e", "#0f172a", "#16a34a"),
+    4: ("#84cc16", "#1a2e05", "#65a30d"),
+    3: ("#eab308", "#1c1917", "#ca8a04"),
+    2: ("#f97316", "#1c1917", "#ea580c"),
+    1: ("#ef4444", "#fff5f5", "#dc2626"),
+}
+
+
+def _calendar_month_bounds(req, today: date) -> tuple[int, int, date, date]:
+    y = req.args.get("year", type=int) or today.year
+    m = req.args.get("month", type=int) or today.month
     if m < 1 or m > 12 or y < 1990 or y > 2105:
         y, m = today.year, today.month
     try:
@@ -771,90 +965,63 @@ def workout_calendar():
     except ValueError:
         y, m = today.year, today.month
         first = date(y, m, 1)
-
     if m == 12:
         last = date(y, 12, 31)
     else:
         last = date(y, m + 1, 1) - timedelta(days=1)
+    return y, m, first, last
 
-    if m == 1:
-        prev_y, prev_m = y - 1, 12
-    else:
-        prev_y, prev_m = y, m - 1
-    if m == 12:
-        next_y, next_m = y + 1, 1
-    else:
-        next_y, next_m = y, m + 1
 
+def _workout_calendar_events_for_month(user: str, first: date, last: date) -> list[dict]:
     scores: dict[date, int] = {}
-    tables_ok = True
     conn = get_db_connection()
     if conn is None:
         flash("Unable to reach the database.", "error")
-        tables_ok = False
-    else:
-        try:
-            cur = conn.cursor(dictionary=True)
-            cur.execute(
-                """
-                SELECT workout_date, MIN(pace_rating) AS day_tier
-                FROM erg_workouts
-                WHERE username = %s AND workout_date >= %s AND workout_date <= %s
-                GROUP BY workout_date
-                """,
-                (user, first, last),
-            )
-            for row in cur.fetchall():
-                dkey = _row_workout_date_as_date(row["workout_date"])
-                t = int(row["day_tier"])
-                scores[dkey] = max(1, min(5, t))
-            cur.close()
-        except mysql.connector.Error as err:
-            if getattr(err, "errno", None) != 1146:
-                raise
-            flash(TRACKER_TABLES_MSG, "error")
-            tables_ok = False
-        finally:
-            conn.close()
+        return []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT workout_date, ROUND(AVG(pace_rating)) AS day_tier
+            FROM erg_workouts
+            WHERE username = %s AND workout_date >= %s AND workout_date <= %s
+            GROUP BY workout_date
+            """,
+            (user, first, last),
+        )
+        for row in cur.fetchall():
+            dkey = _row_workout_date_as_date(row["workout_date"])
+            t = int(row["day_tier"])
+            scores[dkey] = max(1, min(5, t))
+        cur.close()
+    except mysql.connector.Error as err:
+        if getattr(err, "errno", None) != 1146:
+            raise
+        flash(TRACKER_TABLES_MSG, "error")
+        return []
+    finally:
+        conn.close()
 
-    cal_weeks: list[list[dict]] = []
-    for week in calendar.monthcalendar(y, m):
-        wrow: list[dict] = []
-        for d in week:
-            if d == 0:
-                wrow.append({"pad": True})
-                continue
-            cell_dt = date(y, m, d)
-            has_workout = tables_ok and cell_dt in scores
-            tier = scores[cell_dt] if has_workout else 4
-            if has_workout:
-                tip = f"{cell_dt.isoformat()} — {tier} · {pacing.rating_label(tier)}"
-            else:
-                tip = f"{cell_dt.isoformat()} — Rest / no data ({pacing.rating_label(4)} color)"
-            wrow.append(
-                {
-                    "pad": False,
-                    "day": d,
-                    "tier": tier,
-                    "title": tip,
-                    "is_today": cell_dt == today,
-                }
-            )
-        cal_weeks.append(wrow)
+    events = []
+    for d, tier in scores.items():
+        bg, txt, border = _WORKOUT_CAL_TIER_COLORS.get(tier, _WORKOUT_CAL_TIER_COLORS[4])
+        events.append({
+            "id": f"workout-{d.isoformat()}",
+            "title": f"Score {tier} — {pacing.rating_label(tier)}",
+            "start": d.isoformat(),
+            "allDay": True,
+            "backgroundColor": bg,
+            "borderColor": border,
+            "textColor": txt,
+        })
+    return events
 
-    month_title = first.strftime("%B %Y")
-    return render_template(
-        "calendar.html",
-        cal_weeks=cal_weeks,
-        month_title=month_title,
-        cal_year=y,
-        cal_month=m,
-        prev_y=prev_y,
-        prev_m=prev_m,
-        next_y=next_y,
-        next_m=next_m,
-        rating_label=pacing.rating_label,
-    )
+
+@login_required
+@app.route("/calendar")
+def workout_calendar():
+    q = {k: request.args[k] for k in ("year", "month") if k in request.args}
+    return redirect(url_for("workouts_list", **q))
 
 
 @app.route("/logout")
@@ -862,6 +1029,297 @@ def logout():
     session.clear()
     flash("You have been logged out.", "info")
     return redirect(url_for("login"))
+
+
+# ── Profile ─────────────────────────────────────────────────────────────────
+
+@login_required
+@app.route("/profile", methods=["GET", "POST"])
+def profile():
+    user = session["user"]
+    current_phone = ""
+    conn = get_db_connection()
+    if conn is None:
+        flash("Database unavailable.", "error")
+        return render_template("profile.html", current_phone=current_phone)
+
+    if request.method == "POST":
+        phone_raw = (request.form.get("whatsapp_phone") or "").strip()
+        phone_norm = re.sub(r"\D", "", phone_raw) or None
+        try:
+            _ensure_whatsapp_phone_column(conn)
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE rowing_users SET whatsapp_phone = %s WHERE username = %s",
+                (phone_norm, user),
+            )
+            conn.commit()
+            cur.close()
+            flash("Profile updated.", "success")
+        except mysql.connector.Error as err:
+            conn.rollback()
+            print(f"Profile update error: {err}")
+            flash("Could not update profile.", "error")
+        finally:
+            conn.close()
+        return redirect(url_for("profile"))
+
+    try:
+        _ensure_whatsapp_phone_column(conn)
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT whatsapp_phone FROM rowing_users WHERE username = %s", (user,)
+        )
+        row = cur.fetchone()
+        if row and row.get("whatsapp_phone"):
+            current_phone = row["whatsapp_phone"]
+        cur.close()
+    except mysql.connector.Error as err:
+        print(f"Profile load error: {err}")
+    finally:
+        conn.close()
+
+    return render_template("profile.html", current_phone=current_phone)
+
+
+# ── Admin — WhatsApp scan queue ──────────────────────────────────────────────
+
+@admin_required
+@app.route("/admin/scans")
+def admin_scans():
+    status_filter = request.args.get("status", "")
+    valid_statuses = {"pending", "matched", "rejected", "no_user", "processing"}
+    scans: list = []
+    counts: dict = {}
+
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT status, COUNT(*) AS n FROM pending_whatsapp_scans GROUP BY status"
+            )
+            counts = {row["status"]: int(row["n"]) for row in cur.fetchall()}
+
+            base_q = """
+                SELECT id, image_path, sender_phone, received_at, status,
+                       matched_username, detected_split_seconds,
+                       detected_distance_meters, workout_id, processed_at
+                FROM pending_whatsapp_scans
+                {where}
+                ORDER BY received_at DESC
+                LIMIT 120
+            """
+            if status_filter in valid_statuses:
+                cur.execute(base_q.format(where="WHERE status = %s"), (status_filter,))
+            else:
+                cur.execute(base_q.format(where=""))
+            scans = cur.fetchall()
+            cur.close()
+        except mysql.connector.Error as err:
+            if getattr(err, "errno", None) == 1146:
+                flash("Run wa_schema.sql against your database first.", "error")
+            else:
+                raise
+        finally:
+            conn.close()
+
+    total_pending = counts.get("pending", 0)
+    return render_template(
+        "admin_scans.html",
+        scans=scans,
+        counts=counts,
+        total_pending=total_pending,
+        status_filter=status_filter,
+        format_split=pacing.format_split,
+        is_admin=True,
+    )
+
+
+@admin_required
+@app.route("/admin/scans/process-pending", methods=["POST"])
+def admin_scans_process_pending():
+    result = ocr_processor.process_all_pending()
+    flash(
+        f"OCR batch complete — {result['processed']} processed, {result['errors']} errors.",
+        "success" if result["errors"] == 0 else "error",
+    )
+    return redirect(url_for("admin_scans"))
+
+
+@admin_required
+@app.route("/admin/scans/<int:scan_id>")
+def admin_scan_detail(scan_id):
+    conn = get_db_connection()
+    scan = None
+    all_users: list = []
+    goals_by_user: dict = {}
+
+    if conn:
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute("SELECT * FROM pending_whatsapp_scans WHERE id = %s", (scan_id,))
+            scan = cur.fetchone()
+
+            cur.execute("SELECT username FROM rowing_users ORDER BY username")
+            all_users = [r["username"] for r in cur.fetchall()]
+
+            for uname in all_users:
+                cur.execute(
+                    "SELECT id, title, target_seconds FROM erg_goals "
+                    "WHERE username = %s ORDER BY target_date",
+                    (uname,),
+                )
+                goals = cur.fetchall()
+                if goals:
+                    goals_by_user[uname] = goals
+
+            cur.close()
+        except mysql.connector.Error as err:
+            print(f"Admin scan detail error: {err}")
+            flash("Database error loading scan.", "error")
+            return redirect(url_for("admin_scans"))
+        finally:
+            conn.close()
+
+    if not scan:
+        flash("Scan not found.", "error")
+        return redirect(url_for("admin_scans"))
+
+    chart = pacing.load_chart()
+    import json as _json
+    return render_template(
+        "admin_scan_detail.html",
+        scan=scan,
+        all_users=all_users,
+        goals_by_user_json=_json.dumps(
+            {u: [{"id": g["id"], "title": g["title"],
+                  "target_seconds": g["target_seconds"]} for g in gs]
+             for u, gs in goals_by_user.items()}
+        ),
+        workout_types=chart.get("workout_types", {}),
+        format_split=pacing.format_split,
+        today_iso=date.today().isoformat(),
+        is_admin=True,
+    )
+
+
+@admin_required
+@app.route("/admin/scans/<int:scan_id>/image")
+def admin_scan_image(scan_id):
+    conn = get_db_connection()
+    image_path = None
+    if conn:
+        try:
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                "SELECT image_path FROM pending_whatsapp_scans WHERE id = %s", (scan_id,)
+            )
+            row = cur.fetchone()
+            if row:
+                image_path = row["image_path"]
+            cur.close()
+        finally:
+            conn.close()
+
+    if not image_path or not Path(image_path).exists():
+        return "Image not found", 404
+
+    return send_file(image_path)
+
+
+@admin_required
+@app.route("/admin/scans/<int:scan_id>/process", methods=["POST"])
+def admin_scan_process(scan_id):
+    result = ocr_processor.process_scan(scan_id)
+    if result.get("error"):
+        flash(f"OCR error: {result['error']}", "error")
+    else:
+        split_str = (
+            pacing.format_split(result["split_seconds"])
+            if result.get("split_seconds")
+            else "not detected"
+        )
+        matched = result.get("matched_username") or "no match"
+        flash(f"OCR complete — split: {split_str}, user: {matched}", "success")
+    return redirect(url_for("admin_scan_detail", scan_id=scan_id))
+
+
+@admin_required
+@app.route("/admin/scans/<int:scan_id>/approve", methods=["POST"])
+def admin_scan_approve(scan_id):
+    username = (request.form.get("username") or "").strip()
+    split_raw = (request.form.get("avg_split") or "").strip()
+    workout_key = (request.form.get("workout_key") or "").strip()
+    goal_id_raw = (request.form.get("goal_id") or "").strip()
+    workout_date = request.form.get("workout_date") or date.today().isoformat()
+    dist_raw = (request.form.get("distance_meters") or "").strip()
+    label = (request.form.get("label") or "").strip() or None
+
+    if not username:
+        flash("Select a user account.", "error")
+        return redirect(url_for("admin_scan_detail", scan_id=scan_id))
+
+    try:
+        split_seconds = pacing.parse_split(split_raw)
+    except ValueError:
+        flash("Enter a valid split like 1:58.5.", "error")
+        return redirect(url_for("admin_scan_detail", scan_id=scan_id))
+
+    try:
+        goal_id = int(goal_id_raw)
+    except (ValueError, TypeError):
+        flash("Select a valid goal.", "error")
+        return redirect(url_for("admin_scan_detail", scan_id=scan_id))
+
+    distance_meters = int(dist_raw) if dist_raw.isdigit() else None
+
+    result = ocr_processor.approve_scan(
+        scan_id,
+        username,
+        split_seconds,
+        workout_key,
+        goal_id,
+        workout_date,
+        distance_meters=distance_meters,
+        label=label,
+    )
+    if result.get("error"):
+        flash(f"Could not approve: {result['error']}", "error")
+        return redirect(url_for("admin_scan_detail", scan_id=scan_id))
+
+    flash(
+        f"Workout logged for {username} — rating {result['rating']} "
+        f"(expected {pacing.format_split(result['expected'])}).",
+        "success",
+    )
+    return redirect(url_for("admin_scans"))
+
+
+@admin_required
+@app.route("/admin/scans/<int:scan_id>/reject", methods=["POST"])
+def admin_scan_reject(scan_id):
+    notes = (request.form.get("notes") or "").strip() or None
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE pending_whatsapp_scans "
+                "SET status='rejected', admin_notes=%s, processed_at=NOW() "
+                "WHERE id = %s",
+                (notes, scan_id),
+            )
+            conn.commit()
+            cur.close()
+            flash("Scan rejected.", "success")
+        except mysql.connector.Error as err:
+            conn.rollback()
+            print(f"Scan reject error: {err}")
+            flash("Could not reject scan.", "error")
+        finally:
+            conn.close()
+    return redirect(url_for("admin_scans"))
 
 
 if __name__ == "__main__":

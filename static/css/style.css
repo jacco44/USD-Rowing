@@ -190,3 +190,123 @@ button:hover {
   background: rgba(60, 100, 180, 0.35);
   color: #fff;
 }
+
+.register-wrap {
+  width: min(440px, 94vw);
+  max-height: min(92vh, 900px);
+  overflow-y: auto;
+  text-align: left;
+}
+
+.register-wrap form > h2,
+.register-wrap .tagline,
+.register-wrap > form {
+  text-align: center;
+}
+
+.register-wrap .flash-list {
+  text-align: left;
+}
+
+.register-profile {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  padding: 14px 14px 10px;
+  margin: 18px 0 12px;
+  color: #fff;
+}
+
+.register-legend {
+  padding: 0 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #e8e8e8;
+}
+
+.register-hint {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: rgba(255, 255, 255, 0.88);
+  margin: 10px 0 12px;
+}
+
+.hr-zones-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 12px;
+}
+
+@media (min-width: 420px) {
+  .hr-zones-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.hr-zone-cell label {
+  display: block;
+  font-size: 0.75rem;
+  color: rgba(255, 255, 255, 0.85);
+  margin-bottom: 4px;
+}
+
+.hr-zone-cell input {
+  width: 100%;
+  height: 36px;
+  padding: 0 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.25);
+  color: #fff;
+  font-size: 15px;
+}
+
+.hr-zone-cell input:focus {
+  outline: 2px solid rgba(255, 255, 255, 0.5);
+  outline-offset: 1px;
+}
+
+.garmin-block {
+  margin: 16px 0 8px;
+  text-align: center;
+}
+
+.garmin-label {
+  margin-bottom: 10px;
+}
+
+.btn-garmin {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 18px;
+  background: #fff;
+  color: #000;
+  border: 2px solid rgba(0, 0, 0, 0.08);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+  transition: 0.2s ease;
+}
+
+.btn-garmin:hover {
+  background: #f3f3f3;
+  border-color: rgba(0, 0, 0, 0.15);
+}
+
+.btn-garmin img {
+  display: block;
+  height: 22px;
+  width: auto;
+}
+
+.garmin-soon {
+  margin-top: 10px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.75);
+  text-align: center;
+}

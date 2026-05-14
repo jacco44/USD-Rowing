@@ -1,0 +1,122 @@
+{% extends "layout_app.html" %}
+{% block title %}WhatsApp Scans · Admin{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">WhatsApp Scans</h1>
+  <p class="page-sub">
+    Images posted to the Workouts group — review, OCR, and approve them as workout entries.
+  </p>
+</div>
+
+{# ── Status summary ─────────────────────────────────────────────────────── #}
+<div class="stat-grid" style="margin-bottom:1.25rem">
+  {% set status_meta = [
+    ('pending',    'Pending OCR',    'var(--accent)'),
+    ('matched',    'Matched',        'var(--success)'),
+    ('no_user',    'No account',     '#f59e0b'),
+    ('rejected',   'Rejected',       'var(--tier-1)'),
+  ] %}
+  {% for key, label, color in status_meta %}
+  <a href="{{ url_for('admin_scans', status=key) }}" style="text-decoration:none">
+    <article class="stat-card glass" style="cursor:pointer;{% if status_filter == key %}border-color:{{ color }};{% endif %}">
+      <span class="stat-label">{{ label }}</span>
+      <span class="stat-value" style="font-size:1.8rem;color:{{ color }}">
+        {{ counts.get(key, 0) }}
+      </span>
+    </article>
+  </a>
+  {% endfor %}
+</div>
+
+{# ── Toolbar ────────────────────────────────────────────────────────────── #}
+<div style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap;margin-bottom:1.25rem">
+  <form method="post" action="{{ url_for('admin_scans_process_pending') }}" style="margin:0">
+    <button type="submit" class="btn-primary" {% if counts.get('pending', 0) == 0 %}disabled{% endif %}>
+      Run OCR on all pending ({{ counts.get('pending', 0) }})
+    </button>
+  </form>
+  {% if status_filter %}
+  <a href="{{ url_for('admin_scans') }}" class="btn-sm btn-edit">Show all</a>
+  {% endif %}
+</div>
+
+{# ── Scan table ─────────────────────────────────────────────────────────── #}
+{% if scans %}
+<div class="panel glass" style="padding:0;overflow:hidden">
+  <table class="data-table" style="table-layout:auto">
+    <thead>
+      <tr>
+        <th style="width:4rem">Thumb</th>
+        <th>Sender</th>
+        <th>Received</th>
+        <th>Status</th>
+        <th>Split</th>
+        <th>Matched user</th>
+        <th style="width:7rem">Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in scans %}
+      {% set sid = s.id %}
+      <tr>
+        <td>
+          <a href="{{ url_for('admin_scan_detail', scan_id=sid) }}">
+            <img
+              src="{{ url_for('admin_scan_image', scan_id=sid) }}"
+              alt="scan {{ sid }}"
+              style="width:52px;height:52px;object-fit:cover;border-radius:6px;border:1px solid rgba(255,255,255,0.12)"
+              loading="lazy"
+              onerror="this.style.display='none'"
+            >
+          </a>
+        </td>
+        <td style="font-variant-numeric:tabular-nums;font-size:0.82rem;color:var(--text-muted)">
+          {{ s.sender_phone }}
+        </td>
+        <td style="font-size:0.82rem;color:var(--text-muted);white-space:nowrap">
+          {{ s.received_at.strftime('%b %d %H:%M') if s.received_at else '—' }}
+        </td>
+        <td>
+          {% if s.status == 'pending' %}
+            <span class="badge" style="background:rgba(59,130,246,0.2);color:#93c5fd">Pending</span>
+          {% elif s.status == 'processing' %}
+            <span class="badge" style="background:rgba(234,179,8,0.2);color:#fde047">Processing</span>
+          {% elif s.status == 'matched' %}
+            <span class="badge" style="background:rgba(34,197,94,0.2);color:#86efac">Matched</span>
+          {% elif s.status == 'no_user' %}
+            <span class="badge" style="background:rgba(249,115,22,0.2);color:#fed7aa">No user</span>
+          {% elif s.status == 'rejected' %}
+            <span class="badge" style="background:rgba(239,68,68,0.2);color:#fca5a5">Rejected</span>
+          {% endif %}
+        </td>
+        <td style="font-variant-numeric:tabular-nums">
+          {% if s.detected_split_seconds %}
+            {{ format_split(s.detected_split_seconds) }}<span style="font-size:0.72rem;color:var(--text-muted)">/500m</span>
+          {% else %}—{% endif %}
+        </td>
+        <td style="font-size:0.82rem;color:rgba(255,255,255,0.75)">
+          {% if s.matched_username %}
+            {{ s.matched_username.split('@')[0] }}
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          <a href="{{ url_for('admin_scan_detail', scan_id=sid) }}" class="btn-sm btn-edit">Review</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel glass empty-panel">
+  <p class="empty-hint">
+    {% if status_filter %}
+      No scans with status "{{ status_filter }}".
+      <a href="{{ url_for('admin_scans') }}">Show all</a>
+    {% else %}
+      No scans yet. Start the <code>wa_scraper</code> Node.js service to pull images from WhatsApp.
+    {% endif %}
+  </p>
+</div>
+{% endif %}
+{% endblock %}

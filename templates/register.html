@@ -11,7 +11,7 @@
   <a class="site-logo" href="{{ url_for('login') }}" aria-label="USD Men's Rowing">
     <img src="{{ url_for('static', filename='nav_logo.svg') }}" alt="" width="160" height="48">
   </a>
-  <div class="wrapper">
+  <div class="wrapper register-wrap">
     <form method="post" action="{{ url_for('register') }}">
       <h2>University of San Diego</h2>
       <p class="tagline">Men's Rowing — create your account</p>
@@ -25,7 +25,7 @@
         {% endif %}
       {% endwith %}
       <div class="input-field">
-        <input type="email" name="username" id="username" autocomplete="username" required>
+        <input type="email" name="username" id="username" autocomplete="username" required value="{{ request.form.get('username', '') }}">
         <label for="username">USD email (@sandiego.edu)</label>
       </div>
       <div class="input-field">
@@ -36,6 +36,49 @@
         <input type="password" name="password_confirm" id="password_confirm" autocomplete="new-password" required minlength="{{ min_password_length }}">
         <label for="password_confirm">Confirm password</label>
       </div>
+
+      <fieldset class="register-profile">
+        <legend class="register-legend">Training profile</legend>
+        <div class="input-field">
+          <input type="text" name="two_k" id="two_k" autocomplete="off" placeholder=" " value="{{ reg_form.two_k }}">
+          <label for="two_k">Current 2k (optional, e.g. 6:45)</label>
+        </div>
+        <p class="register-hint">
+          Heart rate zones below use the <strong>upper bpm limit</strong> of each zone (common %max-HR bands).
+          Suggested values assume max HR near <strong>190</strong>; change them to match your watch or test data.
+        </p>
+        <div class="hr-zones-grid" role="group" aria-label="Heart rate zone ceilings in bpm">
+          {% for i in range(1, 6) %}
+            {% set key = 'hr_zone' ~ i ~ '_max' %}
+            <div class="hr-zone-cell">
+              <label for="{{ key }}">Zone {{ i }} max (bpm)</label>
+              <input type="number" name="{{ key }}" id="{{ key }}" min="50" max="230" required
+                value="{{ reg_form[key] }}">
+            </div>
+          {% endfor %}
+        </div>
+      </fieldset>
+
+      <div class="input-field">
+        <input
+          type="tel"
+          name="whatsapp_phone"
+          id="whatsapp_phone"
+          autocomplete="tel"
+          placeholder=" "
+          value="{{ request.form.get('whatsapp_phone', '') }}">
+        <label for="whatsapp_phone">WhatsApp number (optional, e.g. 16195551234)</label>
+      </div>
+
+      <div class="garmin-block">
+        <p class="register-legend garmin-label">Wearables</p>
+        <button type="button" class="btn-garmin" id="garmin-connect-placeholder" aria-label="Connect Garmin (coming soon)">
+          <img src="{{ url_for('static', filename='Garmin_logo_2006.svg.png') }}" alt="" width="80" height="22">
+          <span>Connect</span>
+        </button>
+        <p class="garmin-soon">Garmin account linking is not implemented yet; this button is reserved for a future release.</p>
+      </div>
+
       <button type="submit">Create account</button>
       <div class="register">
         <p>Already have an account? <a href="{{ url_for('login') }}">Sign in</a></p>

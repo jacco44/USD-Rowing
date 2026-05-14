@@ -1,0 +1,312 @@
+{% extends "layout_app.html" %}
+{% block title %}Scan #{{ scan.id }} · Admin{% endblock %}
+{% block extra_head %}
+<style>
+  .scan-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+    gap: 1.25rem;
+    align-items: start;
+  }
+  @media (max-width: 700px) {
+    .scan-layout { grid-template-columns: 1fr; }
+  }
+
+  .scan-img-wrap {
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(0,0,0,0.35);
+  }
+  .scan-img-wrap img {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 520px;
+    object-fit: contain;
+  }
+
+  .ocr-block {
+    margin-top: 1rem;
+    background: rgba(0,0,0,0.4);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    padding: 0.85rem 1rem;
+    font-family: ui-monospace, "Cascadia Code", monospace;
+    font-size: 0.78rem;
+    color: rgba(255,255,255,0.72);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 240px;
+    overflow-y: auto;
+    line-height: 1.55;
+  }
+
+  .meta-row {
+    display: flex;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+  }
+  .meta-item { display: flex; flex-direction: column; gap: 0.2rem; }
+  .meta-key {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  .meta-val {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #fff;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .approve-section { margin-bottom: 1.25rem; }
+  .reject-section {
+    border-top: 1px solid rgba(255,255,255,0.08);
+    padding-top: 1rem;
+    margin-top: 1rem;
+  }
+  .section-head {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin-bottom: 0.75rem;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Scan #{{ scan.id }}</h1>
+  <p class="page-sub">
+    From <strong>{{ scan.sender_phone }}</strong> ·
+    received {{ scan.received_at.strftime('%B %d, %Y at %H:%M') if scan.received_at else '—' }}
+    ·
+    {% if scan.status == 'pending' %}<span style="color:#93c5fd">Pending OCR</span>
+    {% elif scan.status == 'processing' %}<span style="color:#fde047">Processing</span>
+    {% elif scan.status == 'matched' %}<span style="color:#86efac">Matched ✓</span>
+    {% elif scan.status == 'no_user' %}<span style="color:#fed7aa">No matching account</span>
+    {% elif scan.status == 'rejected' %}<span style="color:#fca5a5">Rejected</span>
+    {% endif %}
+  </p>
+</div>
+
+<div class="scan-layout">
+
+  {# ── Left: image + OCR text ─────────────────────────────────────────── #}
+  <div>
+    <div class="scan-img-wrap">
+      <img
+        src="{{ url_for('admin_scan_image', scan_id=scan.id) }}"
+        alt="Workout scan #{{ scan.id }}"
+        onerror="this.parentElement.innerHTML='<p style=\'padding:2rem;color:var(--text-muted);text-align:center\'>Image file not found on disk</p>'"
+      >
+    </div>
+
+    {% if scan.status in ('pending', 'no_user', 'matched') %}
+    <form method="post" action="{{ url_for('admin_scan_process', scan_id=scan.id) }}" style="margin-top:0.75rem">
+      <button type="submit" class="btn-sm btn-edit" style="font-size:0.82rem;padding:0.4rem 0.9rem">
+        {% if scan.ocr_raw_text %}Re-run OCR{% else %}Run OCR{% endif %}
+      </button>
+    </form>
+    {% endif %}
+
+    {% if scan.ocr_raw_text %}
+    <p class="section-head" style="margin-top:1rem">Raw OCR output</p>
+    <div class="ocr-block">{{ scan.ocr_raw_text }}</div>
+    {% elif scan.status == 'pending' %}
+    <p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.75rem">
+      No OCR yet — click "Run OCR" above.
+    </p>
+    {% endif %}
+
+    <a href="{{ url_for('admin_scans') }}" class="btn-link" style="display:inline-block;margin-top:1rem;font-size:0.82rem">
+      ← Back to all scans
+    </a>
+  </div>
+
+  {# ── Right: detected values + approve / reject forms ───────────────── #}
+  <div class="panel glass" style="padding:1.35rem 1.45rem">
+
+    {# Detected values summary #}
+    <div class="meta-row">
+      <div class="meta-item">
+        <span class="meta-key">Detected split</span>
+        <span class="meta-val">
+          {% if scan.detected_split_seconds %}
+            {{ format_split(scan.detected_split_seconds) }}<span style="font-weight:400;font-size:0.78rem;color:var(--text-muted)">/500m</span>
+          {% else %}—{% endif %}
+        </span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-key">Distance</span>
+        <span class="meta-val">
+          {% if scan.detected_distance_meters %}{{ scan.detected_distance_meters }} m{% else %}—{% endif %}
+        </span>
+      </div>
+      <div class="meta-item">
+        <span class="meta-key">Auto-matched user</span>
+        <span class="meta-val" style="font-size:0.88rem">
+          {% if scan.matched_username %}{{ scan.matched_username.split('@')[0] }}{% else %}—{% endif %}
+        </span>
+      </div>
+    </div>
+
+    {% if scan.status == 'matched' and scan.workout_id %}
+    <p style="color:#86efac;font-size:0.88rem;margin-bottom:0.75rem">
+      Already logged as workout #{{ scan.workout_id }}.
+    </p>
+    {% endif %}
+
+    {# ── Approve form ─────────────────────────────────────────────────── #}
+    {% if scan.status != 'rejected' %}
+    <div class="approve-section">
+      <p class="section-head">
+        {% if scan.status == 'matched' %}Re-approve / correct{% else %}Approve as workout{% endif %}
+      </p>
+      <form method="post" action="{{ url_for('admin_scan_approve', scan_id=scan.id) }}" id="approve-form">
+
+        <div class="field">
+          <label class="field-label" for="approve-user">Athlete account</label>
+          <select name="username" id="approve-user" style="width:100%" onchange="updateGoals(this.value)">
+            <option value="">— select user —</option>
+            {% for u in all_users %}
+            <option value="{{ u }}"
+              {% if scan.matched_username == u %}selected{% endif %}>
+              {{ u.split('@')[0] }} ({{ u }})
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="approve-goal">Goal to score against</label>
+          <select name="goal_id" id="approve-goal" style="width:100%">
+            <option value="">— select user first —</option>
+          </select>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label class="field-label" for="approve-split">Avg split (/500m)</label>
+            <input
+              type="text"
+              name="avg_split"
+              id="approve-split"
+              placeholder="1:58.5"
+              value="{{ format_split(scan.detected_split_seconds) if scan.detected_split_seconds else '' }}"
+              style="width:100%"
+              required
+            >
+          </div>
+          <div class="field">
+            <label class="field-label" for="approve-dist">Distance (m, optional)</label>
+            <input
+              type="number"
+              name="distance_meters"
+              id="approve-dist"
+              placeholder="5000"
+              value="{{ scan.detected_distance_meters or '' }}"
+              min="100"
+              max="100000"
+              style="width:100%"
+            >
+          </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="approve-type">Workout type</label>
+          <select name="workout_key" id="approve-type" style="width:100%">
+            {% for key, wt in workout_types.items() %}
+            <option value="{{ key }}"
+              {% if key == scan.detected_workout_key %}selected{% endif %}>
+              {{ wt.label if wt.label is defined else key }}
+            </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label class="field-label" for="approve-date">Workout date</label>
+            <input
+              type="date"
+              name="workout_date"
+              id="approve-date"
+              value="{{ (scan.received_at.strftime('%Y-%m-%d') if scan.received_at else today_iso) }}"
+              style="width:100%"
+              required
+            >
+          </div>
+          <div class="field">
+            <label class="field-label" for="approve-label">Label (optional)</label>
+            <input
+              type="text"
+              name="label"
+              id="approve-label"
+              placeholder="e.g. Steady state"
+              style="width:100%"
+            >
+          </div>
+        </div>
+
+        <div class="form-actions">
+          <button type="submit" class="btn-primary">Log workout</button>
+        </div>
+      </form>
+    </div>
+    {% endif %}
+
+    {# ── Reject section ───────────────────────────────────────────────── #}
+    {% if scan.status not in ('matched', 'rejected') %}
+    <div class="reject-section">
+      <p class="section-head">Reject</p>
+      <form method="post" action="{{ url_for('admin_scan_reject', scan_id=scan.id) }}" style="display:flex;gap:0.6rem;flex-wrap:wrap;align-items:flex-end">
+        <div class="field" style="flex:1;min-width:10rem;margin-bottom:0">
+          <label class="field-label" for="reject-notes">Reason (optional)</label>
+          <input type="text" name="notes" id="reject-notes" placeholder="Not an erg screen, duplicate, etc." style="width:100%">
+        </div>
+        <button type="submit" class="btn-sm btn-danger" style="flex-shrink:0">Reject</button>
+      </form>
+    </div>
+    {% endif %}
+
+    {% if scan.status == 'rejected' and scan.admin_notes %}
+    <p style="color:var(--text-muted);font-size:0.85rem;margin-top:0.5rem">
+      Rejection note: {{ scan.admin_notes }}
+    </p>
+    {% endif %}
+
+  </div>
+</div>
+
+<script>
+  const goalsByUser = {{ goals_by_user_json | safe }};
+
+  function updateGoals(username) {
+    const goalSel = document.getElementById('approve-goal');
+    goalSel.innerHTML = '<option value="">— no goals —</option>';
+    const goals = goalsByUser[username] || [];
+    goals.forEach(g => {
+      const opt = document.createElement('option');
+      opt.value = g.id;
+      const totalSec = g.target_seconds;
+      const m = Math.floor(totalSec / 60);
+      const s = (totalSec % 60).toFixed(1).padStart(4, '0');
+      const splitStr = `${m}:${s}`;
+      opt.textContent = (g.title || 'Goal') + ` (target 2k ${splitStr})`;
+      goalSel.appendChild(opt);
+    });
+  }
+
+  // Pre-populate goals for the pre-selected user on load
+  const sel = document.getElementById('approve-user');
+  if (sel && sel.value) updateGoals(sel.value);
+</script>
+{% endblock %}

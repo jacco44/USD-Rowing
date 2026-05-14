@@ -7,6 +7,7 @@
   <link rel="icon" href="{{ url_for('static', filename='nav_logo.svg') }}" type="image/svg+xml">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='css/tracker.css') }}">
+  {% block extra_head %}{% endblock %}
 </head>
 <body class="app-shell" {% if celebrate %}data-celebrate="{{ celebrate }}"{% endif %}>
   <div class="app-bg" aria-hidden="true"></div>
@@ -19,8 +20,11 @@
       <a href="{{ url_for('goals_list') }}">Goals</a>
       <a href="{{ url_for('workout_new') }}">Log workout</a>
       <a href="{{ url_for('workouts_list') }}">History</a>
-      <a href="{{ url_for('workout_calendar') }}">Calendar</a>
       <a href="{{ url_for('leaderboard') }}">Leaderboard</a>
+      <a href="{{ url_for('profile') }}" class="nav-muted">Profile</a>
+      {% if is_admin %}
+      <a href="{{ url_for('admin_scans') }}" style="color:#f59e0b;border-color:rgba(245,158,11,0.35);background:rgba(245,158,11,0.1)">WA Scans</a>
+      {% endif %}
       <a href="{{ url_for('logout') }}" class="nav-muted">Log out</a>
     </nav>
   </header>

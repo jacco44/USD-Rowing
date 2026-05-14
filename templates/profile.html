@@ -1,0 +1,34 @@
+{% extends "layout_app.html" %}
+{% block title %}Profile · USD Men's Rowing{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Profile</h1>
+  <p class="page-sub">Link your WhatsApp number so workout images you post are matched to your account automatically.</p>
+</div>
+
+<div class="form-panel glass">
+  <form method="post" action="{{ url_for('profile') }}">
+    <div class="field">
+      <label class="field-label" for="whatsapp_phone">WhatsApp phone number</label>
+      <input
+        type="tel"
+        name="whatsapp_phone"
+        id="whatsapp_phone"
+        value="{{ current_phone }}"
+        placeholder="16195551234"
+        autocomplete="tel"
+        style="width:100%"
+      >
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-top:0.4rem;line-height:1.45;">
+        Enter your full number with country code, no spaces or dashes —
+        e.g. <strong style="color:rgba(255,255,255,0.75)">16195551234</strong> for a US number.
+        This must match the number you use in the WhatsApp group.
+      </p>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Save</button>
+      <a href="{{ url_for('dashboard') }}" class="btn-link" style="margin-left:0.5rem">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

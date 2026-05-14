@@ -3,8 +3,20 @@
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">Workout history</h1>
-  <p class="page-sub">Each split is scored 1–5 against the pacing chart for your goal.</p>
+  <p class="page-sub">Each split is scored 1–5 against the pacing chart for your goal. The calendar shows each day's <strong>average pace score</strong> from logged workouts (1–5 vs chart).</p>
 </div>
+
+<section class="panel glass fc-workout-panel" id="workout-calendar-section" aria-labelledby="workout-cal-heading">
+  <h2 id="workout-cal-heading" class="cal-section-title">Month view</h2>
+  <div id="workout-calendar"></div>
+  <div class="cal-legend" aria-label="Score legend">
+    <span class="cal-legend-item"><span class="cal-legend-swatch tier-5" aria-hidden="true"></span>5 · {{ rating_label(5) }}</span>
+    <span class="cal-legend-item"><span class="cal-legend-swatch tier-4" aria-hidden="true"></span>4 · {{ rating_label(4) }}</span>
+    <span class="cal-legend-item"><span class="cal-legend-swatch tier-3" aria-hidden="true"></span>3 · {{ rating_label(3) }}</span>
+    <span class="cal-legend-item"><span class="cal-legend-swatch tier-2" aria-hidden="true"></span>2 · {{ rating_label(2) }}</span>
+    <span class="cal-legend-item"><span class="cal-legend-swatch tier-1" aria-hidden="true"></span>1 · {{ rating_label(1) }}</span>
+  </div>
+</section>
 
 <p class="toolbar"><a class="btn-primary" href="{{ url_for('workout_new') }}">+ Log workout</a></p>
 
@@ -58,4 +70,104 @@
   <p class="empty-hint">No workouts logged yet. <a href="{{ url_for('workout_new') }}">Add an erg session</a>.</p>
 </div>
 {% endif %}
+
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.20/index.global.min.js"></script>
+<script>
+(function () {
+  var rawEvents = {{ events_json | safe }};
+  var calUrl = "{{ url_for('workouts_list') }}";
+  var serverY = {{ cal_year }};
+  var serverM = {{ cal_month }};
+
+  var calendarEl = document.getElementById("workout-calendar");
+  if (!calendarEl || typeof FullCalendar === "undefined") {
+    return;
+  }
+
+  var calendar = new FullCalendar.Calendar(calendarEl, {
+    initialView: "dayGridMonth",
+    initialDate: "{{ cal_date_iso }}",
+    firstDay: 0,
+    fixedWeekCount: false,
+    height: "auto",
+    aspectRatio: 1.35,
+    events: rawEvents,
+    eventDisplay: "block",
+    displayEventTime: false,
+    editable: false,
+    selectable: false,
+    navLinks: false,
+    dayMaxEvents: true,
+    headerToolbar: {
+      left: "prev,next today",
+      center: "title",
+      right: ""
+    },
+    datesSet: function (info) {
+      var calDate = info.view.calendar.getDate();
+      var y = calDate.getFullYear();
+      var m = calDate.getMonth() + 1;
+      if (y !== serverY || m !== serverM) {
+        window.location.href = calUrl + "?year=" + y + "&month=" + m;
+      }
+    }
+  });
+
+  calendar.render();
+})();
+</script>
+<style>
+/* After FullCalendar injects its styles (script above), keep workout page theming. */
+#workout-calendar .fc {
+  --fc-border-color: rgba(255, 255, 255, 0.1);
+  --fc-page-bg-color: transparent;
+  --fc-neutral-bg-color: rgba(10, 20, 42, 0.35);
+  --fc-neutral-text-color: rgba(255, 255, 255, 0.55);
+  --fc-button-text-color: rgba(255, 255, 255, 0.88);
+  --fc-button-bg-color: rgba(30, 58, 120, 0.45);
+  --fc-button-border-color: rgba(255, 255, 255, 0.16);
+  --fc-button-hover-bg-color: rgba(59, 130, 246, 0.35);
+  --fc-button-hover-border-color: rgba(147, 197, 253, 0.45);
+  --fc-button-active-bg-color: rgba(59, 130, 246, 0.5);
+  --fc-today-bg-color: rgba(59, 130, 246, 0.18);
+  --fc-now-indicator-color: #93c5fd;
+  --fc-list-event-hover-bg-color: rgba(59, 130, 246, 0.15);
+  --fc-highlight-color: rgba(59, 130, 246, 0.2);
+  font-size: 0.92rem;
+}
+
+#workout-calendar .fc .fc-toolbar-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+#workout-calendar .fc .fc-col-header-cell-cushion,
+#workout-calendar .fc .fc-daygrid-day-number {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+#workout-calendar .fc .fc-daygrid-day.fc-day-today .fc-daygrid-day-number {
+  color: #93c5fd;
+  font-weight: 700;
+}
+
+#workout-calendar .fc .fc-scrollgrid {
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.13);
+}
+
+#workout-calendar .fc .fc-daygrid-day-frame {
+  min-height: 4.25rem;
+}
+
+#workout-calendar .fc .fc-daygrid-event {
+  border-radius: 6px;
+  font-weight: 600;
+  font-size: 0.75rem;
+  border-width: 1px;
+}
+</style>
 {% endblock %}

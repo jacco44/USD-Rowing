@@ -829,7 +829,22 @@ body.app-shell::before {
   text-decoration: underline;
 }
 
-/* ── Workout calendar ─────────────────────────────────────────────────────── */
+/* ── FullCalendar (workout month view) — extra rules in workouts.html <style> ─ */
+
+.cal-section-title {
+  margin: 0 0 0.65rem;
+  padding: 0 0.15rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.9);
+  letter-spacing: -0.02em;
+}
+
+.fc-workout-panel {
+  padding: 0.75rem 0.75rem 1.25rem;
+}
+
+/* ── Legacy hand-rolled workout calendar ─────────────────────────────────── */
 .cal-toolbar {
   display: flex;
   align-items: center;
