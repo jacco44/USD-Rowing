@@ -1,4 +1,4 @@
-"""Shared MySQL connection configuration for the USD Rowing app."""
+"""Shared MySQL connection configuration"""
 
 from pathlib import Path
 

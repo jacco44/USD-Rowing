@@ -55,6 +55,7 @@ const client = new Client({
     dataPath: path.join(__dirname, '.wwebjs_auth'),
   }),
   puppeteer: {
+    executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium-browser',
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
