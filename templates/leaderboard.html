@@ -3,7 +3,7 @@
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">🏆 Leaderboard</h1>
-  <p class="page-sub">Average pace score (1–5) over the last 30 days · only workouts tied to <strong>public</strong> goals.</p>
+  <p class="page-sub">Average pace score (1.00–5.00) over the last 30 days · only workouts tied to <strong>public</strong> goals.</p>
 </div>
 
 {% if rows %}
@@ -29,8 +29,8 @@
         </td>
         <td style="font-weight:600">{{ row.username.split('@')[0] }}</td>
         <td>
-          <span class="tier-pill tier-{{ (row.avg_rating|float)|round|int }}">
-            {{ "%.2f"|format(row.avg_rating|float) }}
+          <span class="tier-pill tier-{{ row.avg_rating|round|int }}">
+            {{ format_pace_score(row.avg_rating) }}
           </span>
         </td>
         <td>{{ row.workouts }}</td>
@@ -45,4 +45,28 @@
   <p class="empty-hint">No ranked athletes yet this month. Set a <a href="{{ url_for('goal_new') }}">public goal</a> and start logging!</p>
 </div>
 {% endif %}
+
+<section class="panel glass scoring-method-panel" aria-labelledby="scoring-method-heading">
+  <h2 id="scoring-method-heading" class="scoring-method-title">How erg scores work</h2>
+  <p class="scoring-method-lead">{{ scoring_method.summary }}</p>
+  <p class="scoring-method-lead">{{ scoring_method.leaderboard }}</p>
+  <table class="scoring-method-table">
+    <thead>
+      <tr>
+        <th>Score</th>
+        <th>Label</th>
+        <th>Vs chart target (/500m)</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for score_range, label, detail in scoring_method.bands %}
+      <tr>
+        <td><span class="scoring-method-score">{{ score_range }}</span></td>
+        <td>{{ label }}</td>
+        <td class="scoring-method-detail">{{ detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
 {% endblock %}

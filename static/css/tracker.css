@@ -529,6 +529,62 @@ body.app-shell::before {
   color: var(--text-muted);
 }
 
+/* ── Scoring method (leaderboard) ────────────────────────────────────────── */
+.scoring-method-panel {
+  margin-top: 1.25rem;
+  padding: 1.25rem 1.35rem;
+}
+
+.scoring-method-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 0 0 0.75rem;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.scoring-method-lead {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
+  margin: 0 0 0.65rem;
+}
+
+.scoring-method-lead:last-of-type {
+  margin-bottom: 1rem;
+}
+
+.scoring-method-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.86rem;
+}
+
+.scoring-method-table th,
+.scoring-method-table td {
+  text-align: left;
+  padding: 0.5rem 0.55rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  vertical-align: top;
+}
+
+.scoring-method-table th {
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.scoring-method-score {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #93c5fd;
+}
+
+.scoring-method-detail {
+  color: var(--text-muted);
+  font-size: 0.84rem;
+}
+
 /* ── Leaderboard ─────────────────────────────────────────────────────────── */
 .lb-compact {
   list-style: none;

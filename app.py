@@ -4,6 +4,7 @@ import json
 import os
 import re
 import secrets
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 from datetime import date as date_class  # alias used in goals_list for clarity
 from functools import wraps
@@ -47,6 +48,8 @@ def is_valid_usd_email(email: str) -> bool:
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
 app.jinja_env.globals["format_split"] = pacing.format_split
+app.jinja_env.globals["format_pace_score"] = pacing.format_pace_score
+app.jinja_env.globals["workout_pace_score"] = pacing.workout_pace_score
 
 
 @app.context_processor
@@ -402,25 +405,15 @@ def dashboard():
                 stats["best_rating_week"] = int(row["best"])
             cur.execute(
                 """
-                SELECT id, workout_date, avg_split_seconds, pace_rating, label, workout_key
+                SELECT id, workout_date, avg_split_seconds, pace_rating, split_delta_seconds,
+                       label, workout_key
                 FROM erg_workouts WHERE username = %s
                 ORDER BY workout_date DESC, id DESC LIMIT 6
                 """,
                 (user,),
             )
             recent_workouts = cur.fetchall()
-            cur.execute(
-                """
-                SELECT w.username, AVG(w.pace_rating) AS ar, COUNT(*) AS n
-                FROM erg_workouts w
-                INNER JOIN erg_goals g ON w.goal_id = g.id AND g.is_public = 1
-                WHERE w.workout_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                GROUP BY w.username
-                ORDER BY ar DESC, n DESC
-                LIMIT 5
-                """,
-            )
-            leaderboard_preview = cur.fetchall()
+            leaderboard_preview = _leaderboard_rows(limit=5, days=30)
             cur.close()
         except mysql.connector.Error as err:
             if getattr(err, "errno", None) != 1146:
@@ -904,38 +897,68 @@ def goal_complete(goal_id):
     return redirect(url_for("goals_list"))
 
 
+def _leaderboard_rows(limit: int = 40, days: int = 30) -> list[dict]:
+    """Aggregate public-goal workout scores (continuous 1.00–5.00) per athlete."""
+    conn = get_db_connection()
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT w.username, w.split_delta_seconds, w.pace_rating, w.workout_date
+            FROM erg_workouts w
+            INNER JOIN erg_goals g ON w.goal_id = g.id AND g.is_public = 1
+            WHERE w.workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            """,
+            (days,),
+        )
+        raw = cur.fetchall()
+        cur.close()
+    except mysql.connector.Error as err:
+        if getattr(err, "errno", None) != 1146:
+            raise
+        flash(TRACKER_TABLES_MSG, "error")
+        return []
+    finally:
+        conn.close()
+
+    buckets: dict[str, dict] = defaultdict(lambda: {"scores": [], "last": None})
+    for row in raw:
+        user = row["username"]
+        buckets[user]["scores"].append(
+            pacing.workout_pace_score(row.get("split_delta_seconds"), row.get("pace_rating"))
+        )
+        wd = row["workout_date"]
+        if buckets[user]["last"] is None or wd > buckets[user]["last"]:
+            buckets[user]["last"] = wd
+
+    rows = []
+    for username, data in buckets.items():
+        if not data["scores"]:
+            continue
+        avg = sum(data["scores"]) / len(data["scores"])
+        rows.append(
+            {
+                "username": username,
+                "avg_rating": avg,
+                "workouts": len(data["scores"]),
+                "last_workout": data["last"],
+            }
+        )
+    rows.sort(key=lambda r: (-r["avg_rating"], -r["workouts"]))
+    return rows[:limit]
+
+
 @login_required
 @app.route("/leaderboard")
 def leaderboard():
-    rows = []
-    conn = get_db_connection()
-    if conn:
-        try:
-            cur = conn.cursor(dictionary=True)
-            cur.execute(
-                """
-                SELECT w.username,
-                       AVG(w.pace_rating) AS avg_rating,
-                       COUNT(*) AS workouts,
-                       MAX(w.workout_date) AS last_workout
-                FROM erg_workouts w
-                INNER JOIN erg_goals g ON w.goal_id = g.id AND g.is_public = 1
-                WHERE w.workout_date >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
-                GROUP BY w.username
-                ORDER BY avg_rating DESC, workouts DESC
-                LIMIT 40
-                """,
-            )
-            rows = cur.fetchall()
-            cur.close()
-        except mysql.connector.Error as err:
-            if getattr(err, "errno", None) != 1146:
-                raise
-            flash(TRACKER_TABLES_MSG, "error")
-        finally:
-            conn.close()
-
-    return render_template("leaderboard.html", rows=rows)
+    rows = _leaderboard_rows(limit=40, days=30)
+    return render_template(
+        "leaderboard.html",
+        rows=rows,
+        scoring_method=pacing.SCORING_METHOD,
+    )
 
 
 def _row_workout_date_as_date(value) -> date:

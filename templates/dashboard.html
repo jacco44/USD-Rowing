@@ -57,7 +57,8 @@
   <ul class="mini-list">
     {% for w in recent_workouts %}
     <li class="mini-row">
-      <span class="tier-pill tier-{{ w.pace_rating }}" title="{{ rating_label(w.pace_rating) }}">{{ w.pace_rating }}</span>
+      {% set wscore = workout_pace_score(w.split_delta_seconds, w.pace_rating) %}
+      <span class="tier-pill tier-{{ wscore|round|int }}" title="{{ rating_label(w.pace_rating) }}">{{ format_pace_score(wscore) }}</span>
       <span class="mini-date">{{ w.workout_date }}</span>
       <span class="mini-split">{{ format_split(w.avg_split_seconds|float) }}<span style="font-size:0.75rem;color:var(--text-muted);font-weight:400">/500m</span></span>
       {% if w.label %}<span class="mini-label">{{ w.label }}</span>{% endif %}
@@ -83,7 +84,7 @@
         {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
       </span>
       <span class="lb-name">{{ row.username.split('@')[0] }}</span>
-      <span class="lb-score tier-{{ (row.ar|float)|round|int }}">{{ "%.2f"|format(row.ar|float) }}</span>
+      <span class="lb-score tier-{{ row.avg_rating|round|int }}">{{ format_pace_score(row.avg_rating) }}</span>
     </li>
     {% endfor %}
   </ol>

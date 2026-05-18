@@ -39,8 +39,9 @@
       {% for w in workouts %}
       <tr>
         <td style="padding-left:1.1rem">
-          <span class="tier-pill tier-{{ w.pace_rating }}" title="{{ rating_label(w.pace_rating) }}">
-            {{ w.pace_rating }}
+          {% set wscore = workout_pace_score(w.split_delta_seconds, w.pace_rating) %}
+          <span class="tier-pill tier-{{ wscore|round|int }}" title="{{ rating_label(w.pace_rating) }}">
+            {{ format_pace_score(wscore) }}
           </span>
         </td>
         <td style="color:var(--text-muted);font-size:0.84rem">{{ w.workout_date }}</td>
