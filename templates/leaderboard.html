@@ -3,6 +3,98 @@
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">🏆 Leaderboard</h1>
+  <p class="page-sub">Last 30 days · USD Men's Rowing</p>
+</div>
+
+{# ── Team Goal Fill Meter ──────────────────────────────────────────────────── #}
+<section class="panel glass team-goal-panel" aria-label="Team goal">
+  <div class="team-goal-header">
+    <div>
+      <h2 class="team-goal-title">⛵ Team Goal — Minutes on the Erg</h2>
+      <p class="team-goal-sub">
+        {{ team_goal.athlete_count }} athlete{{ 's' if team_goal.athlete_count != 1 else '' }} contributing
+        &nbsp;·&nbsp; last 30 days
+        &nbsp;·&nbsp; all workouts with logged duration
+      </p>
+    </div>
+    <span class="team-goal-pct-badge {% if team_goal.progress_pct >= 100 %}goal-complete{% elif team_goal.progress_pct >= 75 %}goal-near{% endif %}">
+      {{ "%.1f"|format(team_goal.progress_pct) }}%
+    </span>
+  </div>
+
+  <div class="team-goal-bar-wrap" role="progressbar"
+       aria-valuenow="{{ team_goal.progress_pct|round(1) }}"
+       aria-valuemin="0" aria-valuemax="100"
+       aria-label="Team goal progress">
+    <div class="team-goal-fill" style="width: {{ [team_goal.progress_pct, 100]|min }}%">
+      {% if team_goal.progress_pct >= 8 %}
+      <span class="team-goal-fill-label">{{ "%.1f"|format(team_goal.progress_pct) }}%</span>
+      {% endif %}
+    </div>
+    <span class="goal-milestone-marker" style="left:25%" aria-hidden="true"><span class="goal-milestone-tick"></span><span class="goal-milestone-label">25%</span></span>
+    <span class="goal-milestone-marker" style="left:50%" aria-hidden="true"><span class="goal-milestone-tick"></span><span class="goal-milestone-label">50%</span></span>
+    <span class="goal-milestone-marker" style="left:75%" aria-hidden="true"><span class="goal-milestone-tick"></span><span class="goal-milestone-label">75%</span></span>
+  </div>
+
+  <div class="team-goal-totals">
+    <span class="team-goal-done">{{ format_minutes(team_goal.total_minutes) }}</span>
+    <span class="team-goal-sep">of</span>
+    <span class="team-goal-target">{{ format_minutes(team_goal.target_minutes) }} team goal</span>
+    {% if team_goal.progress_pct >= 100 %}
+    <span class="team-goal-achieved">🎉 Goal achieved!</span>
+    {% elif team_goal.total_minutes > 0 %}
+    <span class="team-goal-remaining">({{ format_minutes(team_goal.target_minutes - team_goal.total_minutes) }} to go)</span>
+    {% endif %}
+  </div>
+</section>
+
+{# ── TUT Leaderboard ───────────────────────────────────────────────────────── #}
+<div class="page-head" style="margin-top:2rem">
+  <h2 class="page-title" style="font-size:1.55rem">⏱ Time Under Tension</h2>
+  <p class="page-sub">Total logged workout minutes · last 30 days · all workouts with duration</p>
+</div>
+
+{% if tut_rows %}
+<div class="panel glass" style="padding:0;overflow:hidden;margin-bottom:1.5rem;">
+  <table class="data-table leaderboard-table" style="margin:0">
+    <thead>
+      <tr>
+        <th style="padding-left:1.25rem">#</th>
+        <th>Athlete</th>
+        <th>Total time</th>
+        <th>Workouts</th>
+        <th>Last log</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in tut_rows %}
+      <tr class="rank-row rank-{{ loop.index }}">
+        <td class="rank-cell" style="padding-left:1.25rem">
+          {% if loop.index == 1 %}<span class="medal gold">1</span>
+          {% elif loop.index == 2 %}<span class="medal silver">2</span>
+          {% elif loop.index == 3 %}<span class="medal bronze">3</span>
+          {% else %}<span class="rank-num">{{ loop.index }}</span>{% endif %}
+        </td>
+        <td style="font-weight:600">{{ row.username.split('@')[0] }}</td>
+        <td>
+          <span class="tut-pill">{{ format_minutes(row.total_minutes) }}</span>
+        </td>
+        <td>{{ row.workout_count }}</td>
+        <td style="color:var(--text-muted);font-size:0.84rem">{{ row.last_workout }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel glass empty-panel" style="margin-bottom:1.5rem">
+  <p class="empty-hint">No logged durations yet. Add a duration when logging a workout to appear here!</p>
+</div>
+{% endif %}
+
+{# ── Pace Score Leaderboard ────────────────────────────────────────────────── #}
+<div class="page-head" style="margin-top:2rem">
+  <h2 class="page-title" style="font-size:1.55rem">📈 Pace Score Rankings</h2>
   <p class="page-sub">Average pace score (1.00–5.00) over the last 30 days · only workouts tied to <strong>public</strong> goals.</p>
 </div>
 

@@ -4,12 +4,20 @@ OCR processing for WhatsApp workout images.
 Handles Concept2 PM5 erg screens and queues them into the
 pending_whatsapp_scans table for admin review.
 
-Dependencies: easyocr, Pillow  (pip install easyocr Pillow)
-EasyOCR downloads its language model (~100 MB) on first use.
+Dependencies: boto3  (pip install boto3)
+
+Authentication — any standard AWS credential chain, evaluated in order:
+  1. AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (+ optional AWS_SESSION_TOKEN)
+  2. ~/.aws/credentials profile (AWS_PROFILE / AWS_DEFAULT_PROFILE)
+  3. IAM instance / task role (when running on EC2 / ECS / Lambda)
+
+Optional env vars:
+  AWS_DEFAULT_REGION  — defaults to "us-east-1" if not set
 """
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -20,23 +28,27 @@ import pacing
 from database import get_db_connection
 
 # ---------------------------------------------------------------------------
-# EasyOCR — lazy singleton so Flask doesn't stall on import
+# AWS Textract — lazy singleton
 # ---------------------------------------------------------------------------
-_ocr_reader = None
+_textract_client = None
 
 
-def _get_reader():
-    """Return the EasyOCR Reader, initialising it once on first call."""
-    global _ocr_reader
-    if _ocr_reader is None:
-        try:
-            import easyocr  # noqa: PLC0415
-        except ImportError as exc:
-            raise RuntimeError(
-                "easyocr is not installed. Run: pip install easyocr Pillow"
-            ) from exc
-        _ocr_reader = easyocr.Reader(["en"], gpu=False, verbose=False)
-    return _ocr_reader
+def _get_textract_client():
+    """Return a boto3 Textract client, initialised once."""
+    global _textract_client
+    if _textract_client is not None:
+        return _textract_client
+
+    try:
+        import boto3  # noqa: PLC0415
+    except ImportError as exc:
+        raise RuntimeError(
+            "boto3 is not installed. Run: pip install boto3"
+        ) from exc
+
+    region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    _textract_client = boto3.client("textract", region_name=region)
+    return _textract_client
 
 
 # ---------------------------------------------------------------------------
@@ -45,8 +57,6 @@ def _get_reader():
 
 # Concept2 PM5 split format: M:SS.d  (e.g. 1:47.3, 2:05.8)
 # Realistic college-athlete range per 500 m: 1:20 (80 s) → 3:30 (210 s).
-# We exclude anything whose decoded value falls outside that band to avoid
-# confusing elapsed time (e.g. "20:05.0") with split pace.
 _SPLIT_RE = re.compile(r"\b([1-9]):([0-5]\d)\.(\d)\b")
 
 # Distance as shown on PM5: "4,523 m", "10000m", "2k", etc.
@@ -89,8 +99,6 @@ def extract_split(text: str) -> float | None:
 
     if not candidates:
         return None
-    # Among candidates, prefer the value closest to 2:00/500m (120 s) —
-    # the median pace for a typical collegiate rower.
     return min(candidates, key=lambda v: abs(v - 120.0))
 
 
@@ -117,10 +125,26 @@ def extract_distance(text: str) -> int | None:
 
 
 def run_ocr(image_path: str) -> str:
-    """Run EasyOCR on an image and return the concatenated text."""
-    reader = _get_reader()
-    results = reader.readtext(image_path, detail=0, paragraph=False)
-    return "\n".join(str(r) for r in results)
+    """
+    Run AWS Textract DetectDocumentText on an image and return all detected
+    lines joined into a single string.
+
+    Textract handles natural-scene photos (e.g. a phone photo of a Concept2
+    PM5 display) well via its LINE blocks, which are returned in reading order.
+    """
+    client = _get_textract_client()
+
+    with open(image_path, "rb") as f:
+        content = f.read()
+
+    response = client.detect_document_text(Document={"Bytes": content})
+
+    lines = [
+        block["Text"]
+        for block in response.get("Blocks", [])
+        if block.get("BlockType") == "LINE"
+    ]
+    return "\n".join(lines)
 
 
 def _normalize_phone(phone: str) -> str:
@@ -160,7 +184,6 @@ def process_scan(scan_id: int) -> dict[str, Any]:
             conn.commit()
             return {"error": "Image file not found on disk"}
 
-        # Mark as processing
         cur.execute(
             "UPDATE pending_whatsapp_scans SET status='processing' WHERE id = %s",
             (scan_id,),
@@ -181,7 +204,6 @@ def process_scan(scan_id: int) -> dict[str, Any]:
         split_seconds = extract_split(ocr_text)
         distance_meters = extract_distance(ocr_text)
 
-        # Try to match sender phone → rowing_users.whatsapp_phone
         sender_norm = _normalize_phone(scan["sender_phone"])
         cur.execute(
             "SELECT username FROM rowing_users "

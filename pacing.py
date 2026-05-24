@@ -214,3 +214,73 @@ def parse_split(value: str) -> float:
 def parse_goal_2k(value: str) -> float:
     """Parse a 2k goal time (e.g. '6:15.0') into total seconds."""
     return parse_split(value)
+
+
+def _workout_columns(chart: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Workout keys in chart column order, excluding total 2k time (shown as sticky row label)."""
+    types = chart.get("workout_types") or {}
+    items = [
+        (k, meta)
+        for k, meta in types.items()
+        if k != "time_2k" and meta.get("column") is not None
+    ]
+    return sorted(items, key=lambda kv: int(kv[1]["column"]))
+
+
+def format_workout_cell(seconds: float | None, kind: str | None = None) -> str:
+    if seconds is None:
+        return "—"
+    return format_split(float(seconds))
+
+
+def build_chart_table(chart: dict[str, Any]) -> dict[str, Any]:
+    """
+    Table-friendly view of the pacing chart for templates.
+    Rows sorted by 2k time; first column is sticky 2k time, remaining columns scroll horizontally.
+    """
+    columns = [
+        {
+            "key": key,
+            "header": meta.get("header") or key,
+            "zone": meta.get("zone"),
+            "spm_hint": meta.get("spm_hint"),
+            "kind": meta.get("kind"),
+        }
+        for key, meta in _workout_columns(chart)
+    ]
+    table_rows: list[dict[str, Any]] = []
+    for row in _sorted_rows(chart):
+        t2k = float(row["time_2k_seconds"])
+        workouts = row.get("workouts") or {}
+        cells = []
+        for col in columns:
+            raw = workouts.get(col["key"])
+            cells.append(
+                {
+                    "key": col["key"],
+                    "display": format_workout_cell(raw, col.get("kind")),
+                    "raw": raw,
+                    "zone": col.get("zone"),
+                }
+            )
+        table_rows.append(
+            {
+                "time_2k_seconds": t2k,
+                "time_2k_display": format_split(t2k),
+                "cells": cells,
+            }
+        )
+    return {
+        "title": chart.get("title") or "Pacing chart",
+        "zone_summary": chart.get("zone_summary_row") or {},
+        "columns": columns,
+        "rows": table_rows,
+    }
+
+
+def chart_row_matches_goal(
+    row_time_2k_seconds: float,
+    goal_target_seconds: float,
+    tolerance: float = 0.5,
+) -> bool:
+    return abs(float(row_time_2k_seconds) - float(goal_target_seconds)) <= tolerance

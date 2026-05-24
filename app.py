@@ -45,11 +45,24 @@ def is_valid_usd_email(email: str) -> bool:
     return bool(email) and email.lower().endswith(USD_EMAIL_SUFFIX.lower())
 
 
+def format_minutes(minutes: float) -> str:
+    """Format a duration in minutes as 'Xh Ym' or 'X min'."""
+    minutes = max(0.0, float(minutes))
+    if minutes < 60:
+        return f"{minutes:.0f} min"
+    h = int(minutes // 60)
+    m = int(minutes % 60)
+    if m == 0:
+        return f"{h}h"
+    return f"{h}h {m}m"
+
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
 app.jinja_env.globals["format_split"] = pacing.format_split
 app.jinja_env.globals["format_pace_score"] = pacing.format_pace_score
 app.jinja_env.globals["workout_pace_score"] = pacing.workout_pace_score
+app.jinja_env.globals["format_minutes"] = format_minutes
 
 
 @app.context_processor
@@ -169,6 +182,131 @@ def _ensure_whatsapp_phone_column(conn) -> None:
         if getattr(err, "errno", None) != 1060:  # 1060 = Duplicate column
             raise
         conn.rollback()
+
+
+_streak_columns_ready = False
+
+
+def _ensure_streak_columns(conn) -> None:
+    """Add streak_count and streak_last_workout_date to rowing_users if missing."""
+    global _streak_columns_ready
+    if _streak_columns_ready:
+        return
+    alters = (
+        "ALTER TABLE rowing_users ADD COLUMN streak_count INT NOT NULL DEFAULT 0",
+        "ALTER TABLE rowing_users ADD COLUMN streak_last_workout_date DATE NULL",
+    )
+    for stmt in alters:
+        try:
+            cur = conn.cursor()
+            cur.execute(stmt)
+            conn.commit()
+            cur.close()
+        except mysql.connector.Error as err:
+            if getattr(err, "errno", None) != 1060:
+                raise
+            conn.rollback()
+    _streak_columns_ready = True
+
+
+def _update_streak(conn, username: str, workout_date_str: str) -> int:
+    """Increment (or maintain) the streak after a workout on workout_date_str.
+
+    Rules:
+    - Same day as last workout   → no change.
+    - 1-day gap                  → streak + 1.
+    - 2-day gap (forgiveness)    → streak + 1.
+    - 3+ day gap                 → reset to 1.
+
+    Returns the resulting streak count.
+    """
+    _ensure_streak_columns(conn)
+    try:
+        workout_date = date.fromisoformat(workout_date_str)
+    except (ValueError, TypeError):
+        workout_date = date.today()
+
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT streak_count, streak_last_workout_date "
+            "FROM rowing_users WHERE username = %s",
+            (username,),
+        )
+        row = cur.fetchone()
+        cur.close()
+    except mysql.connector.Error:
+        return 0
+
+    if not row:
+        return 0
+
+    current_streak = int(row["streak_count"] or 0)
+    last_date = row["streak_last_workout_date"]  # datetime.date or None
+
+    if last_date is None:
+        new_streak = 1
+        new_date = workout_date
+    elif workout_date <= last_date:
+        # Same day or retroactive — no streak change
+        return current_streak
+    else:
+        days_diff = (workout_date - last_date).days
+        new_streak = current_streak + 1 if days_diff <= 2 else 1
+        new_date = workout_date
+
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE rowing_users "
+            "SET streak_count = %s, streak_last_workout_date = %s "
+            "WHERE username = %s",
+            (new_streak, new_date, username),
+        )
+        conn.commit()
+        cur.close()
+    except mysql.connector.Error:
+        conn.rollback()
+        return current_streak
+
+    return new_streak
+
+
+def _streak_tier(count: int) -> str:
+    if count == 0:
+        return "zero"
+    if count <= 3:
+        return "low"
+    if count <= 7:
+        return "mid"
+    if count <= 14:
+        return "high"
+    return "max"
+
+
+@app.context_processor
+def inject_streak():
+    """Inject streak_count and streak_tier into every template context."""
+    user = session.get("user")
+    if not user:
+        return {"streak_count": 0, "streak_tier": "zero"}
+    conn = get_db_connection()
+    if conn is None:
+        return {"streak_count": 0, "streak_tier": "zero"}
+    try:
+        _ensure_streak_columns(conn)
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT streak_count FROM rowing_users WHERE username = %s", (user,)
+        )
+        row = cur.fetchone()
+        cur.close()
+        count = int(row["streak_count"] or 0) if row else 0
+    except mysql.connector.Error:
+        count = 0
+    finally:
+        conn.close()
+    return {"streak_count": count, "streak_tier": _streak_tier(count)}
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -469,11 +607,21 @@ def goals_list():
             flash(TRACKER_TABLES_MSG, "error")
         finally:
             conn.close()
+    chart = pacing.load_chart()
+    pacing_chart = pacing.build_chart_table(chart)
+    goal_targets = [
+        float(g["target_seconds"])
+        for g in rows
+        if g.get("target_seconds") is not None and not g.get("is_completed")
+    ]
     return render_template(
         "goals.html",
         goals=rows,
         format_split=pacing.format_split,
         today=date_class.today(),
+        pacing_chart=pacing_chart,
+        goal_targets=goal_targets,
+        chart_row_matches_goal=pacing.chart_row_matches_goal,
     )
 
 
@@ -726,6 +874,7 @@ def workout_new():
                 ),
             )
             conn.commit()
+            _update_streak(conn, user, workout_date)
             if rating == 5:
                 session["celebrate"] = "perfect_workout"
             flash(
@@ -897,6 +1046,90 @@ def goal_complete(goal_id):
     return redirect(url_for("goals_list"))
 
 
+def _team_goal_stats(days: int = 30) -> dict:
+    """Aggregate total team workout minutes for the collective fill-meter goal."""
+    target_minutes = int(os.environ.get("TEAM_GOAL_MINUTES", 5000))
+    conn = get_db_connection()
+    if conn is None:
+        return {"total_minutes": 0.0, "target_minutes": target_minutes, "progress_pct": 0.0, "athlete_count": 0}
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT
+                COALESCE(SUM(duration_seconds), 0) / 60.0 AS total_minutes,
+                COUNT(DISTINCT username) AS athlete_count
+            FROM erg_workouts
+            WHERE duration_seconds IS NOT NULL
+              AND duration_seconds > 0
+              AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            """,
+            (days,),
+        )
+        row = cur.fetchone()
+        cur.close()
+    except mysql.connector.Error as err:
+        if getattr(err, "errno", None) != 1146:
+            raise
+        return {"total_minutes": 0.0, "target_minutes": target_minutes, "progress_pct": 0.0, "athlete_count": 0}
+    finally:
+        conn.close()
+
+    total = float(row["total_minutes"]) if row else 0.0
+    athlete_count = int(row["athlete_count"]) if row else 0
+    pct = min(100.0, (total / target_minutes) * 100) if target_minutes > 0 else 0.0
+    return {
+        "total_minutes": total,
+        "target_minutes": target_minutes,
+        "progress_pct": pct,
+        "athlete_count": athlete_count,
+    }
+
+
+def _tut_leaderboard_rows(limit: int = 40, days: int = 30) -> list[dict]:
+    """Rank athletes by total workout minutes (time under tension) over recent days."""
+    conn = get_db_connection()
+    if conn is None:
+        return []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT
+                username,
+                ROUND(SUM(duration_seconds) / 60.0, 1) AS total_minutes,
+                COUNT(*) AS workout_count,
+                MAX(workout_date) AS last_workout
+            FROM erg_workouts
+            WHERE duration_seconds IS NOT NULL
+              AND duration_seconds > 0
+              AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
+            GROUP BY username
+            ORDER BY total_minutes DESC
+            LIMIT %s
+            """,
+            (days, limit),
+        )
+        rows = cur.fetchall()
+        cur.close()
+    except mysql.connector.Error as err:
+        if getattr(err, "errno", None) != 1146:
+            raise
+        return []
+    finally:
+        conn.close()
+
+    return [
+        {
+            "username": r["username"],
+            "total_minutes": float(r["total_minutes"]),
+            "workout_count": int(r["workout_count"]),
+            "last_workout": r["last_workout"],
+        }
+        for r in rows
+    ]
+
+
 def _leaderboard_rows(limit: int = 40, days: int = 30) -> list[dict]:
     """Aggregate public-goal workout scores (continuous 1.00–5.00) per athlete."""
     conn = get_db_connection()
@@ -954,9 +1187,13 @@ def _leaderboard_rows(limit: int = 40, days: int = 30) -> list[dict]:
 @app.route("/leaderboard")
 def leaderboard():
     rows = _leaderboard_rows(limit=40, days=30)
+    tut_rows = _tut_leaderboard_rows(limit=40, days=30)
+    team_goal = _team_goal_stats(days=30)
     return render_template(
         "leaderboard.html",
         rows=rows,
+        tut_rows=tut_rows,
+        team_goal=team_goal,
         scoring_method=pacing.SCORING_METHOD,
     )
 
@@ -1310,6 +1547,13 @@ def admin_scan_approve(scan_id):
     if result.get("error"):
         flash(f"Could not approve: {result['error']}", "error")
         return redirect(url_for("admin_scan_detail", scan_id=scan_id))
+
+    streak_conn = get_db_connection()
+    if streak_conn:
+        try:
+            _update_streak(streak_conn, username, workout_date)
+        finally:
+            streak_conn.close()
 
     flash(
         f"Workout logged for {username} — rating {result['rating']} "

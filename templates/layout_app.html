@@ -27,6 +27,25 @@
       {% endif %}
       <a href="{{ url_for('logout') }}" class="nav-muted">Log out</a>
     </nav>
+    {% if session.get('user') %}
+    <div class="streak-widget" data-tier="{{ streak_tier }}"
+         title="{{ streak_count }}-day streak{% if streak_count == 0 %} — log a workout to start your streak!{% elif streak_count == 1 %} — keep it going!{% elif streak_count < 7 %} — you're on fire!{% else %} — unstoppable!{% endif %}">
+      <div class="streak-fire-wrap">
+        <div class="fl fl-back"></div>
+        <div class="fl fl-mid"></div>
+        <div class="fl fl-front"></div>
+        <span class="sp sp1"></span>
+        <span class="sp sp2"></span>
+        <span class="sp sp3"></span>
+        <span class="sp sp4"></span>
+        <span class="sp sp5"></span>
+        <div class="streak-disc">
+          <span class="streak-n">{{ streak_count }}</span>
+        </div>
+      </div>
+      <span class="streak-lbl">streak</span>
+    </div>
+    {% endif %}
   </header>
   <main class="app-main">
     {% with messages = get_flashed_messages(with_categories=true) %}

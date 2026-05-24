@@ -207,12 +207,18 @@
   // ── Nav active state ───────────────────────────────────────────────────────
   function markActiveNav() {
     var path = window.location.pathname;
+    var active = null;
+    var activeLen = -1;
     document.querySelectorAll('.app-nav a').forEach(function (a) {
       var href = a.getAttribute('href');
-      if (href && href !== '/' && path.indexOf(href) === 0) {
-        a.classList.add('nav-active');
+      if (!href || href === '/') return;
+      var match = path === href || path.indexOf(href + '/') === 0;
+      if (match && href.length > activeLen) {
+        activeLen = href.length;
+        active = a;
       }
     });
+    if (active) active.classList.add('nav-active');
   }
 
   // ── Init ───────────────────────────────────────────────────────────────────

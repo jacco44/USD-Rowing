@@ -78,4 +78,46 @@
   {% endfor %}
 </div>
 {% endif %}
+
+<section class="pacing-chart-section glass" aria-labelledby="pacing-chart-heading">
+  <div class="pacing-chart-head">
+    <h2 id="pacing-chart-heading" class="section-title">📊 {{ pacing_chart.title }}</h2>
+    <p class="pacing-chart-desc">
+      Reference splits for each workout type at every 2k fitness level.
+      {% if goal_targets %}
+        Rows matching your active goal{% if goal_targets|length > 1 %}s{% endif %} are highlighted.
+      {% endif %}
+    </p>
+  </div>
+  <div class="pacing-chart-scroll" tabindex="0" role="region" aria-label="Pacing chart table, scroll horizontally for more workouts">
+    <table class="data-table pacing-chart-table">
+      <thead>
+        <tr>
+          <th class="sticky-col pacing-col-2k" scope="col">2k time</th>
+          {% for col in pacing_chart.columns %}
+          <th class="zone-col zone-{{ col.zone }}" scope="col" title="{% if col.spm_hint %}~{{ col.spm_hint }} spm{% endif %}">
+            {{ col.header }}
+          </th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in pacing_chart.rows %}
+        {% set ns = namespace(highlight=false) %}
+        {% for gt in goal_targets %}
+          {% if chart_row_matches_goal(row.time_2k_seconds, gt) %}
+            {% set ns.highlight = true %}
+          {% endif %}
+        {% endfor %}
+        <tr class="{% if ns.highlight %}pacing-row-goal{% endif %}">
+          <th class="sticky-col pacing-col-2k" scope="row">{{ row.time_2k_display }}</th>
+          {% for cell in row.cells %}
+          <td class="zone-{{ cell.zone }}">{{ cell.display }}</td>
+          {% endfor %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
 {% endblock %}
