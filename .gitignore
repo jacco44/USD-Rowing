@@ -1,1 +1,2 @@
-echo "__pycache__/" >> .gitignore
+__pycache__
+.passwords 
