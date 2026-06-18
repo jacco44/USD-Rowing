@@ -8,24 +8,11 @@ import os
 BASE_DIR = Path(__file__).resolve().parent
 doSQL_password_file = BASE_DIR / ".passwords" / "DigitalOceanSQL.txt"
 
-try:
-    with open(doSQL_password_file, encoding="utf-8") as f:
-        lines = f.read().splitlines()
-        DOSQL_USER = lines[0]
-        DOSQL_PASSWORD = os.environ.get("DOSQL_PASSWORD")
-        DOSQL_HOST = os.environ.get("DOSQL_HOST")
-        DOSQL_DATABASE = lines[3]
-        DOSQL_PORT = int(lines[4].strip()) if len(lines) > 4 and lines[4].strip() else 3306
-except FileNotFoundError:
-    DOSQL_USER = "root"
-    DOSQL_PASSWORD = ""
-    DOSQL_HOST = "localhost"
-    DOSQL_DATABASE = "credentialing"
-    DOSQL_PORT = 3306
-    print(
-        f"Warning: Database password file not found at {doSQL_password_file}. "
-        "Using default configuration."
-    )
+DOSQL_USER = os.environ.get("DOSQL_USER")
+DOSQL_PASSWORD = os.environ.get("DOSQL_PASSWORD")
+DOSQL_HOST = os.environ.get("DOSQL_HOST")
+DOSQL_DATABASE = os.environ.get("DOSQL_DATABASE")
+DOSQL_PORT = os.environ.get("DOSQL_PORT")
 
 config = {
     "user": DOSQL_USER,
