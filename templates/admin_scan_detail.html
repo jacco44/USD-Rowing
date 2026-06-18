@@ -186,7 +186,7 @@
         </div>
 
         <div class="field">
-          <label class="field-label" for="approve-goal">Goal to score against</label>
+          <label class="field-label" for="approve-goal">Goal</label>
           <select name="goal_id" id="approve-goal" style="width:100%">
             <option value="">— select user first —</option>
           </select>
@@ -218,6 +218,22 @@
               style="width:100%"
             >
           </div>
+        </div>
+
+        <div class="field">
+          <label class="field-label" for="approve-duration">Duration (sec, optional)</label>
+          <input
+            type="number"
+            name="duration_seconds"
+            id="approve-duration"
+            placeholder="2700"
+            min="60"
+            max="21600"
+            style="width:100%"
+          >
+          <p style="font-size:0.75rem;color:var(--text-muted);margin-top:0.35rem;">
+            Over 40 min (or estimated from distance × split) logs as steady volume only — no chart scoring.
+          </p>
         </div>
 
         <div class="field">

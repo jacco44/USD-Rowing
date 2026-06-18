@@ -3,12 +3,28 @@
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">Profile</h1>
-  <p class="page-sub">Link your WhatsApp number so workout images you post are matched to your account automatically.</p>
+  <p class="page-sub">Your current 2k drives split comparisons and steady-state volume recommendations.</p>
 </div>
 
 <div class="form-panel glass">
   <form method="post" action="{{ url_for('profile') }}">
     <div class="field">
+      <label class="field-label" for="two_k">Current 2k time</label>
+      <input
+        type="text"
+        name="two_k"
+        id="two_k"
+        value="{{ current_two_k }}"
+        placeholder="6:45.0"
+        autocomplete="off"
+        style="width:100%"
+      >
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-top:0.4rem;line-height:1.45;">
+        Your most recent 2k test (e.g. <strong style="color:rgba(255,255,255,0.75)">6:45.0</strong>).
+        Used to calculate target splits and weekly steady volume vs your goal.
+      </p>
+    </div>
+    <div class="field" style="margin-top:1.25rem">
       <label class="field-label" for="whatsapp_phone">WhatsApp phone number</label>
       <input
         type="tel"

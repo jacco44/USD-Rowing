@@ -3,10 +3,16 @@
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">Goals</h1>
-  <p class="page-sub">Set your targets, track your progress, crush your splits.</p>
+  <p class="page-sub">Set your targets and see the splits you need at each workout intensity.</p>
 </div>
 
 <p class="toolbar"><a class="btn-primary" href="{{ url_for('goal_new') }}">+ New goal</a></p>
+
+{% if not current_2k_source %}
+<p class="panel glass" style="padding:1rem 1.25rem;font-size:0.9rem;color:var(--text-muted);margin-bottom:1.25rem;">
+  <a href="{{ url_for('profile') }}">Add your current 2k</a> to compare where you are now vs your goal splits.
+</p>
+{% endif %}
 
 {% set active_goals = goals | rejectattr('is_completed') | list %}
 {% set done_goals = goals | selectattr('is_completed') | list %}
@@ -14,12 +20,10 @@
 {% if active_goals %}
 <div class="goal-grid">
   {% for g in active_goals %}
+  {% set plan = goal_plans.get(g.id) %}
   <div class="goal-card glass">
     <div class="goal-card-header">
       <h3 class="goal-title">{{ g.title or 'Untitled goal' }}</h3>
-      <div class="goal-badges">
-        {% if g.is_public %}<span class="badge badge-public">Public</span>{% else %}<span class="badge badge-private">Private</span>{% endif %}
-      </div>
     </div>
     <div class="goal-target">
       <span class="goal-split">{{ format_split(g.target_seconds|float) }}</span>
@@ -42,6 +46,11 @@
         {% endif %}
       {% endif %}
     </div>
+    {% if plan and plan.steady_minutes_per_week %}
+    <p class="goal-card-steady">
+      Steady target: <strong>{{ format_minutes(plan.steady_minutes_per_week) }}/wk</strong>
+    </p>
+    {% endif %}
     <div class="goal-actions">
       <a class="btn-sm btn-edit" href="{{ url_for('goal_edit', goal_id=g.id) }}">✏ Edit</a>
       <form method="post" action="{{ url_for('goal_complete', goal_id=g.id) }}" style="display:inline" onsubmit="return confirm('Mark this goal as completed? This can\'t be undone.')">
@@ -58,7 +67,7 @@
 {% endif %}
 
 {% if done_goals %}
-<h2 class="section-title">🏆 Completed goals</h2>
+<h2 class="section-title">Completed goals</h2>
 <div class="goal-grid">
   {% for g in done_goals %}
   <div class="goal-card glass goal-completed">
@@ -81,7 +90,7 @@
 
 <section class="pacing-chart-section glass" aria-labelledby="pacing-chart-heading">
   <div class="pacing-chart-head">
-    <h2 id="pacing-chart-heading" class="section-title">📊 {{ pacing_chart.title }}</h2>
+    <h2 id="pacing-chart-heading" class="section-title">{{ pacing_chart.title }}</h2>
     <p class="pacing-chart-desc">
       Reference splits for each workout type at every 2k fitness level.
       {% if goal_targets %}

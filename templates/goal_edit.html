@@ -21,10 +21,6 @@
     <input type="date" name="target_date" required
            value="{{ goal.target_date }}" min="{{ today_iso }}">
   </label>
-  <label class="field checkbox-field">
-    <input type="checkbox" name="is_public" value="1" {% if goal.is_public %}checked{% endif %}>
-    <span>Show my scores on the team leaderboard</span>
-  </label>
   <div class="form-actions">
     <button type="submit" class="btn-primary">Save changes</button>
     <a href="{{ url_for('goals_list') }}" class="btn-link">Cancel</a>

@@ -8,7 +8,7 @@
 
 {% if not goals %}
 <p class="empty-hint glass empty-panel">
-  Add a <a href="{{ url_for('goal_new') }}">goal</a> first — scoring uses your target 2k and the USD pacing chart.
+  Add a <a href="{{ url_for('goal_new') }}">goal</a> first — we use your target 2k and the USD pacing chart to show target splits.
 </p>
 {% else %}
 <form class="panel glass form-panel" method="post" action="{{ url_for('workout_new') }}">
@@ -54,7 +54,11 @@
     <span class="field-label">Notes</span>
     <textarea name="notes" rows="2" placeholder="Drag factor, how you felt…"></textarea>
   </label>
-  <button type="submit" class="btn-primary">Save &amp; score</button>
+  <p style="font-size:0.82rem;color:var(--text-muted);margin:0 0 1rem;line-height:1.45;">
+    Workouts <strong>longer than 40 minutes</strong> (by duration or estimated from distance × split)
+    count as steady-state volume toward your weekly target and streak — they are not scored against the chart.
+  </p>
+  <button type="submit" class="btn-primary">Save workout</button>
 </form>
 {% endif %}
 {% endblock %}

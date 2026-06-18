@@ -1776,3 +1776,187 @@ body.app-shell::before {
   .streak-disc { width: 1.9rem; height: 1.9rem; }
   .streak-n { font-size: 0.7rem; }
 }
+
+/* ── Personal goal plan ─────────────────────────────────────────────────── */
+.goal-plan-panel {
+  padding: 1.35rem 1.5rem 1.25rem;
+}
+
+.goal-plan-gap {
+  font-size: 0.92rem;
+  color: var(--text-muted);
+  margin: 0 0 1rem;
+  line-height: 1.5;
+}
+
+.goal-plan-gap strong {
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.goal-plan-ahead {
+  color: #86efac;
+}
+
+.goal-plan-table-wrap {
+  overflow-x: auto;
+}
+
+.goal-plan-table th,
+.goal-plan-table td {
+  font-size: 0.88rem;
+}
+
+.goal-plan-wk {
+  font-weight: 600;
+  color: #fff;
+}
+
+.zone-tag {
+  display: inline-block;
+  margin-left: 0.4rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+.split-cell {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.split-target {
+  color: #93c5fd;
+}
+
+.goal-card-steady {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin: 0.5rem 0 0;
+}
+
+.goal-card-steady strong {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.steady-vol-pill {
+  display: inline-block;
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: rgba(34, 197, 94, 0.15);
+  color: #86efac;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+
+/* ── WhatsApp scan review ─────────────────────────────────────────────────── */
+.scan-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.scan-img-wrap {
+  position: relative;
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.scan-img-wrap img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 520px;
+  object-fit: contain;
+}
+
+.scan-thumb {
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.scan-img-missing {
+  padding: 2rem;
+  color: var(--text-muted);
+  text-align: center;
+  margin: 0;
+}
+
+.ocr-block {
+  margin-top: 0.5rem;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  padding: 0.85rem 1rem;
+  font-family: ui-monospace, "Cascadia Code", monospace;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+  line-height: 1.55;
+}
+
+.scan-section-head {
+  margin-top: 1rem;
+}
+
+.scan-back-link {
+  display: inline-block;
+  margin-top: 1rem;
+  font-size: 0.82rem;
+}
+
+.scan-edit-panel {
+  padding: 1.35rem 1.45rem;
+}
+
+.scan-edit-hint {
+  font-size: 0.88rem;
+  color: var(--text-muted);
+  margin: 0 0 1.1rem;
+  line-height: 1.45;
+}
+
+.scan-steady-note {
+  font-size: 0.85rem;
+  color: #86efac;
+  margin: 0 0 1rem;
+}
+
+.scan-target-note {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 0 0 1rem;
+}
+
+.field-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.35rem;
+  line-height: 1.4;
+}
+
+.section-head {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 0.75rem;
+}
+
+@media (max-width: 700px) {
+  .scan-layout {
+    grid-template-columns: 1fr;
+  }
+}

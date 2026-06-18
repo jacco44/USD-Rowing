@@ -1,0 +1,92 @@
+{% extends "layout_app.html" %}
+{% block title %}My WhatsApp scans · USD Men's Rowing{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">My WhatsApp scans</h1>
+  <p class="page-sub">
+    Workout screenshots from the group — review what was detected and fix anything that mapped incorrectly.
+    <a href="{{ url_for('profile') }}">Link your WhatsApp number</a> if scans are missing.
+  </p>
+</div>
+
+{% if scans %}
+<div class="panel glass" style="padding:0;overflow:hidden">
+  <table class="data-table" style="table-layout:auto">
+    <thead>
+      <tr>
+        <th style="width:4rem">Image</th>
+        <th>Received</th>
+        <th>Status</th>
+        <th>Detected split</th>
+        <th>Logged workout</th>
+        <th style="width:7rem"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in scans %}
+      {% set sid = s.id %}
+      {% set logged_split = s.logged_split if s.logged_split is not none else s.detected_split_seconds %}
+      {% set logged_dist = s.logged_distance if s.logged_distance is not none else s.detected_distance_meters %}
+      {% set dur = effective_workout_duration(s.logged_duration, logged_dist, logged_split|float if logged_split is not none else none) %}
+      <tr>
+        <td>
+          <a href="{{ url_for('my_scan_detail', scan_id=sid) }}">
+            <img
+              src="{{ url_for('my_scan_image', scan_id=sid) }}"
+              alt="Scan {{ sid }}"
+              class="scan-thumb"
+              loading="lazy"
+              onerror="this.style.display='none'"
+            >
+          </a>
+        </td>
+        <td style="font-size:0.84rem;color:var(--text-muted);white-space:nowrap">
+          {{ s.received_at.strftime('%b %d, %Y %H:%M') if s.received_at else '—' }}
+        </td>
+        <td>
+          {% if s.status == 'matched' and s.workout_id %}
+            <span class="badge" style="background:rgba(34,197,94,0.2);color:#86efac">Logged</span>
+          {% elif s.status == 'pending' %}
+            <span class="badge" style="background:rgba(59,130,246,0.2);color:#93c5fd">Pending</span>
+          {% elif s.status == 'no_user' %}
+            <span class="badge" style="background:rgba(249,115,22,0.2);color:#fed7aa">Awaiting log</span>
+          {% else %}
+            <span class="badge">{{ s.status }}</span>
+          {% endif %}
+        </td>
+        <td style="font-variant-numeric:tabular-nums">
+          {% if s.detected_split_seconds %}
+            {{ format_split(s.detected_split_seconds) }}<span style="font-size:0.72rem;color:var(--text-muted)">/500m</span>
+          {% else %}—{% endif %}
+        </td>
+        <td style="font-size:0.84rem">
+          {% if s.workout_id and s.logged_split %}
+            {{ format_split(s.logged_split|float) }}/500m
+            {% if is_steady_workout(dur) %}
+              <span class="steady-vol-pill">Steady</span>
+            {% elif s.goal_title %}
+              <span style="color:var(--text-muted)"> · {{ s.goal_title }}</span>
+            {% endif %}
+          {% elif s.status in ('pending', 'no_user') %}
+            <span style="color:var(--text-muted)">Not logged yet</span>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          <a href="{{ url_for('my_scan_detail', scan_id=sid) }}" class="btn-sm btn-edit">
+            {% if s.workout_id %}Review{% else %}Fix & log{% endif %}
+          </a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel glass empty-panel">
+  <p class="empty-hint">
+    No scans linked to your account yet. Post erg screenshots to the WhatsApp group and make sure your
+    <a href="{{ url_for('profile') }}">WhatsApp number</a> matches the one you use there.
+  </p>
+</div>
+{% endif %}
+{% endblock %}

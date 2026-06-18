@@ -9,6 +9,9 @@ from typing import Any
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CHART_PATH = BASE_DIR / "data" / "pacing_chart.json"
 
+# Workouts longer than this are steady-state volume only (no split scoring).
+STEADY_STATE_MIN_DURATION_SECONDS = 40 * 60
+
 _chart_cache: dict[str, Any] | None = None
 
 
@@ -160,26 +163,6 @@ def rating_label(n: int) -> str:
     }.get(n, "—")
 
 
-SCORING_METHOD = {
-    "summary": (
-        "Each erg piece is scored against the USD pacing chart. Your 2k goal time sets "
-        "an expected /500m split for that workout type; we compare your logged average split "
-        "to that target and map the difference to a score from 1.00 to 5.00."
-    ),
-    "leaderboard": (
-        "Leaderboard ranks show the average workout score over the last 30 days for athletes "
-        "with public goals. Only workouts linked to those goals count."
-    ),
-    "bands": [
-        ("5.00", "On pace or faster", "At or ahead of target, within about 3s/500m fast"),
-        ("4.00 – 4.99", "Strong", "Up to ~2.5s/500m slower than target"),
-        ("3.00 – 3.99", "Solid", "About 2.5–4.5s/500m off"),
-        ("2.00 – 2.99", "Off pace", "About 4.5–8s/500m off"),
-        ("1.00 – 1.99", "Tough day", "More than ~8s/500m slower than target"),
-    ],
-}
-
-
 def format_split(seconds: float) -> str:
     """Format seconds as M:SS.d for erg-style splits."""
     seconds = max(0.0, float(seconds))
@@ -284,3 +267,186 @@ def chart_row_matches_goal(
     tolerance: float = 0.5,
 ) -> bool:
     return abs(float(row_time_2k_seconds) - float(goal_target_seconds)) <= tolerance
+
+
+# Workout keys shown on the personal training plan (goal vs current splits).
+PLAN_WORKOUT_KEYS = (
+    "split_2k",
+    "five_x_5min",
+    "split_6k",
+    "hop",
+    "ten_k",
+    "split_offset_plus_18",
+    "split_offset_plus_21",
+)
+
+
+def estimate_2k_from_workout(
+    chart: dict[str, Any],
+    workout_key: str,
+    avg_split_seconds: float,
+) -> float | None:
+    """Infer current 2k test time from a logged workout split and chart row."""
+    rows = _sorted_rows(chart)
+    if not rows:
+        return None
+    wk = workout_key or ""
+    split = float(avg_split_seconds)
+    if wk in ("split_2k", "time_2k"):
+        return split * 4.0
+
+    best_row: dict[str, Any] | None = None
+    best_diff = float("inf")
+    for row in rows:
+        expected = (row.get("workouts") or {}).get(wk)
+        if expected is None:
+            continue
+        diff = abs(float(expected) - split)
+        if diff < best_diff:
+            best_diff = diff
+            best_row = row
+    if best_row is None or best_diff > 12.0:
+        return None
+    return float(best_row["time_2k_seconds"])
+
+
+def pick_current_2k_seconds(
+    chart: dict[str, Any],
+    profile_two_k: float | None,
+    recent_workouts: list[dict[str, Any]] | None = None,
+) -> tuple[float | None, str | None]:
+    """
+    Best estimate of the athlete's current 2k fitness.
+    Returns (seconds, source_label) where source is 'profile', 'workout', or None.
+    Steady-state pieces (>40 min) are excluded — they don't reflect test fitness.
+    """
+    if profile_two_k is not None:
+        return float(profile_two_k), "profile"
+
+    estimates: list[float] = []
+    for w in recent_workouts or []:
+        dur = effective_workout_duration(
+            w.get("duration_seconds"),
+            w.get("distance_meters"),
+            w.get("avg_split_seconds"),
+        )
+        if is_steady_state_workout(dur):
+            continue
+        wk = w.get("workout_key")
+        split = w.get("avg_split_seconds")
+        if wk is None or split is None:
+            continue
+        est = estimate_2k_from_workout(chart, str(wk), float(split))
+        if est is not None:
+            estimates.append(est)
+    if not estimates:
+        return None, None
+    return min(estimates), "workout"
+
+
+def recommend_steady_minutes_per_week(
+    current_2k_seconds: float,
+    goal_2k_seconds: float,
+    days_left: int | None = None,
+) -> int:
+    """
+    Suggested weekly steady-state (zone 2) minutes from the gap between current and goal 2k.
+    """
+    gap = max(0.0, float(current_2k_seconds) - float(goal_2k_seconds))
+    minutes = 90.0 + min(120.0, gap * 6.0)
+    if days_left is not None and 0 < days_left <= 45:
+        minutes *= 1.0 + (45 - days_left) / 90.0
+    return int(round(minutes / 15.0) * 15.0)
+
+
+def build_goal_plan(
+    chart: dict[str, Any],
+    goal_2k_seconds: float,
+    current_2k_seconds: float | None = None,
+    days_left: int | None = None,
+) -> dict[str, Any]:
+    """
+    Personal training targets: chart splits at goal fitness vs current, plus steady volume.
+    """
+    steady_key = chart.get("default_steady_workout_key", "split_offset_plus_18")
+    types = chart.get("workout_types") or {}
+    goal_map = interpolate_workouts_at_goal(chart, goal_2k_seconds)
+    current_2k = float(current_2k_seconds) if current_2k_seconds is not None else None
+    current_map = interpolate_workouts_at_goal(chart, current_2k) if current_2k else {}
+
+    keys = [k for k in PLAN_WORKOUT_KEYS if k in types]
+    if steady_key not in keys and steady_key in types:
+        keys.append(steady_key)
+
+    rows: list[dict[str, Any]] = []
+    for key in keys:
+        meta = types.get(key) or {}
+        goal_split = goal_map.get(key)
+        cur_split = current_map.get(key) if current_2k else None
+        gap = None
+        if goal_split is not None and cur_split is not None:
+            gap = float(cur_split) - float(goal_split)
+        rows.append(
+            {
+                "key": key,
+                "header": meta.get("header") or key,
+                "zone": meta.get("zone"),
+                "goal_split": goal_split,
+                "current_split": cur_split,
+                "gap_seconds": gap,
+            }
+        )
+
+    steady_minutes = None
+    if current_2k is not None:
+        steady_minutes = recommend_steady_minutes_per_week(current_2k, goal_2k_seconds, days_left)
+
+    gap_2k = (current_2k - float(goal_2k_seconds)) if current_2k is not None else None
+
+    return {
+        "goal_2k_seconds": float(goal_2k_seconds),
+        "current_2k_seconds": current_2k,
+        "gap_2k_seconds": gap_2k,
+        "steady_key": steady_key,
+        "steady_minutes_per_week": steady_minutes,
+        "workout_rows": rows,
+    }
+
+
+def effective_workout_duration(
+    duration_seconds: int | float | None,
+    distance_meters: int | float | None = None,
+    avg_split_seconds: float | None = None,
+) -> int | None:
+    """Known duration, or estimate from distance × split when both are logged."""
+    if duration_seconds is not None and float(duration_seconds) > 0:
+        return int(round(float(duration_seconds)))
+    if distance_meters and avg_split_seconds and float(distance_meters) > 0:
+        return int(round((float(distance_meters) / 500.0) * float(avg_split_seconds)))
+    return None
+
+
+def is_steady_state_workout(duration_seconds: int | float | None) -> bool:
+    """True when duration exceeds 40 minutes — counts as steady volume, not scored."""
+    if duration_seconds is None:
+        return False
+    return float(duration_seconds) > STEADY_STATE_MIN_DURATION_SECONDS
+
+
+def workout_scoring_fields(
+    actual_split: float,
+    expected_split: float | None,
+    duration_seconds: int | float | None,
+    distance_meters: int | float | None = None,
+) -> tuple[int | None, float | None, float | None]:
+    """
+    Returns (pace_rating, expected_split_seconds, split_delta_seconds).
+    All None for steady-state workouts (>40 min) — those only count toward volume/streak.
+    """
+    effective_dur = effective_workout_duration(
+        duration_seconds, distance_meters, actual_split
+    )
+    if is_steady_state_workout(effective_dur) or expected_split is None:
+        return None, None, None
+    delta = float(actual_split) - float(expected_split)
+    return pace_rating(actual_split, expected_split), float(expected_split), delta

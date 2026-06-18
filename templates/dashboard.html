@@ -2,8 +2,8 @@
 {% block title %}Dashboard · USD Men's Rowing{% endblock %}
 {% block content %}
 <div class="page-head">
-  <h1 class="page-title">Extra meters HQ 🚣</h1>
-  <p class="page-sub">University of San Diego Men's Rowing · <strong>{{ email }}</strong></p>
+  <h1 class="page-title">Your training plan</h1>
+  <p class="page-sub">Splits and volume tailored to where you are and where you're headed.</p>
 </div>
 
 <section class="stat-grid" aria-label="Summary">
@@ -17,36 +17,104 @@
     <span class="stat-value">{{ stats.workouts_week }}</span>
     <span class="stat-hint"><a href="{{ url_for('workouts_list') }}" class="stat-hint-link">Full history →</a></span>
   </article>
+  {% if goal_plan and goal_plan.steady_minutes_per_week is not none %}
   <article class="stat-card glass">
-    <span class="stat-label">Avg pace score (14 days)</span>
-    <span class="stat-value">{% if stats.avg_rating is not none %}{{ "%.2f"|format(stats.avg_rating) }}{% else %}—{% endif %}</span>
-    <span class="stat-hint">
-      {% if stats.avg_rating is not none %}
-        {% if stats.avg_rating >= 4.5 %}<span class="tier-pill tier-5">On fire 🔥</span>
-        {% elif stats.avg_rating >= 3.5 %}<span class="tier-pill tier-4">Strong work</span>
-        {% elif stats.avg_rating >= 2.5 %}<span class="tier-pill tier-3">Solid base</span>
-        {% else %}<span class="tier-pill tier-2">Keep grinding</span>{% endif %}
-      {% else %}1–5 vs chart target{% endif %}
-    </span>
+    <span class="stat-label">Steady this week</span>
+    <span class="stat-value">{{ format_minutes(stats.steady_minutes_week) }}</span>
+    <span class="stat-hint">Target {{ format_minutes(goal_plan.steady_minutes_per_week) }}/wk</span>
   </article>
-  {% if stats.best_rating_week is not none %}
+  {% endif %}
+  {% if goal_plan and goal_plan.current_2k_seconds is not none %}
   <article class="stat-card glass">
-    <span class="stat-label">Best score this week</span>
-    <span class="stat-value tier-{{ stats.best_rating_week }}" style="color:inherit">{{ stats.best_rating_week }}</span>
-    <span class="stat-hint"><span class="tier-pill tier-{{ stats.best_rating_week }}">{{ rating_label(stats.best_rating_week) }}</span></span>
+    <span class="stat-label">Current 2k</span>
+    <span class="stat-value">{{ format_split(goal_plan.current_2k_seconds) }}</span>
+    <span class="stat-hint">
+      {% if current_2k_source == 'profile' %}From profile{% else %}From recent workouts{% endif %}
+      · Goal {{ format_split(goal_plan.goal_2k_seconds) }}
+    </span>
   </article>
   {% endif %}
 </section>
 
-{% if not recent_workouts and stats.goals == 0 %}
+{% if not primary_goal %}
 <section class="panel glass" style="border-left: 3px solid #3b82f6; padding: 1.4rem 1.5rem;">
-  <h2 style="font-size:1.1rem;margin-bottom:0.5rem;color:#fff;">👋 Welcome! Let's get started.</h2>
-  <p style="color:var(--text-muted);font-size:0.95rem;margin-bottom:1rem;">Set your first 2k goal and start logging extra meters. Every split counts.</p>
+  <h2 style="font-size:1.1rem;margin-bottom:0.5rem;color:#fff;">Set a 2k goal to unlock your plan</h2>
+  <p style="color:var(--text-muted);font-size:0.95rem;margin-bottom:1rem;">We'll show target splits for each workout type and how much steady-state volume you need based on your current fitness.</p>
   <a class="btn-primary" href="{{ url_for('goal_new') }}">Set your first goal →</a>
 </section>
+{% elif not goal_plan.current_2k_seconds %}
+<section class="panel glass" style="border-left: 3px solid #f59e0b; padding: 1.4rem 1.5rem;">
+  <h2 style="font-size:1.1rem;margin-bottom:0.5rem;color:#fff;">Add your current 2k</h2>
+  <p style="color:var(--text-muted);font-size:0.95rem;margin-bottom:1rem;">Enter your latest 2k test time so we can compare your current splits to your goal and recommend steady volume.</p>
+  <a class="btn-primary" href="{{ url_for('profile') }}">Update profile →</a>
+</section>
+{% else %}
+
+{% if primary_goal %}
+<section class="panel glass goal-plan-panel">
+  <div class="panel-head">
+    <div>
+      <h2>{{ primary_goal.title or 'Your next 2k' }}</h2>
+      <p class="panel-meta">
+        Target {{ format_split(primary_goal.target_seconds|float) }} by {{ primary_goal.target_date }}
+        {% if primary_goal.days_left is not none %}
+          · {% if primary_goal.days_left >= 0 %}{{ primary_goal.days_left }} days left{% else %}{{ -primary_goal.days_left }}d overdue{% endif %}
+        {% endif %}
+      </p>
+    </div>
+    <a class="btn-link" href="{{ url_for('goals_list') }}">All goals →</a>
+  </div>
+
+  {% if goal_plan.gap_2k_seconds is not none and goal_plan.gap_2k_seconds > 0 %}
+  <p class="goal-plan-gap">
+    You're <strong>{{ "%.1f"|format(goal_plan.gap_2k_seconds) }}s</strong> off your goal 2k.
+    {% if goal_plan.steady_minutes_per_week %}
+      Aim for <strong>{{ format_minutes(goal_plan.steady_minutes_per_week) }}</strong> of steady-state rowing per week
+      (zone 2, ~{{ workout_types[goal_plan.steady_key].header if goal_plan.steady_key in workout_types else '+18"' }} split).
+    {% endif %}
+  </p>
+  {% elif goal_plan.gap_2k_seconds is not none %}
+  <p class="goal-plan-gap goal-plan-ahead">You're at or ahead of your goal pace — maintain with ~{{ format_minutes(goal_plan.steady_minutes_per_week) }}/wk steady.</p>
+  {% endif %}
+
+  <div class="goal-plan-table-wrap">
+    <table class="data-table goal-plan-table">
+      <thead>
+        <tr>
+          <th>Workout</th>
+          <th>Your split now</th>
+          <th>Target at goal</th>
+          <th>Gap</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in goal_plan.workout_rows %}
+        <tr>
+          <td>
+            <span class="goal-plan-wk">{{ row.header }}</span>
+            {% if row.zone %}<span class="zone-tag zone-{{ row.zone }}">Z{{ row.zone }}</span>{% endif %}
+          </td>
+          <td class="split-cell">
+            {% if row.current_split is not none %}{{ format_split(row.current_split) }}{% else %}—{% endif %}
+          </td>
+          <td class="split-cell split-target">
+            {% if row.goal_split is not none %}{{ format_split(row.goal_split) }}{% else %}—{% endif %}
+          </td>
+          <td class="delta-{% if row.gap_seconds is not none and row.gap_seconds <= 0 %}pos{% elif row.gap_seconds is not none %}neg{% endif %}">
+            {% if row.gap_seconds is not none %}
+              {% if row.gap_seconds > 0 %}+{% endif %}{{ "%.1f"|format(row.gap_seconds) }}s
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
 {% endif %}
 
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;">
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;margin-top:1.25rem;">
 
 <section class="panel glass">
   <div class="panel-head">
@@ -56,12 +124,17 @@
   {% if recent_workouts %}
   <ul class="mini-list">
     {% for w in recent_workouts %}
+    {% set dur = effective_workout_duration(w.duration_seconds, w.distance_meters, w.avg_split_seconds|float) %}
     <li class="mini-row">
-      {% set wscore = workout_pace_score(w.split_delta_seconds, w.pace_rating) %}
-      <span class="tier-pill tier-{{ wscore|round|int }}" title="{{ rating_label(w.pace_rating) }}">{{ format_pace_score(wscore) }}</span>
       <span class="mini-date">{{ w.workout_date }}</span>
       <span class="mini-split">{{ format_split(w.avg_split_seconds|float) }}<span style="font-size:0.75rem;color:var(--text-muted);font-weight:400">/500m</span></span>
-      {% if w.label %}<span class="mini-label">{{ w.label }}</span>{% endif %}
+      {% if is_steady_workout(dur) %}
+      <span class="mini-label steady-vol-pill">Steady · {% if dur %}{{ format_minutes(dur / 60.0) }}{% endif %}</span>
+      {% elif w.workout_key and w.workout_key in workout_types %}
+      <span class="mini-label">{{ workout_types[w.workout_key].header }}</span>
+      {% elif w.label %}
+      <span class="mini-label">{{ w.label }}</span>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>
@@ -73,25 +146,13 @@
 
 <section class="panel glass">
   <div class="panel-head">
-    <h2>🏅 Leaderboard</h2>
-    <span class="panel-meta">Public goals · 30 days</span>
+    <h2>Quick links</h2>
   </div>
-  {% if leaderboard_preview %}
-  <ol class="lb-compact">
-    {% for row in leaderboard_preview %}
-    <li>
-      <span class="lb-rank">
-        {% if loop.index == 1 %}🥇{% elif loop.index == 2 %}🥈{% elif loop.index == 3 %}🥉{% else %}{{ loop.index }}{% endif %}
-      </span>
-      <span class="lb-name">{{ row.username.split('@')[0] }}</span>
-      <span class="lb-score tier-{{ row.avg_rating|round|int }}">{{ format_pace_score(row.avg_rating) }}</span>
-    </li>
-    {% endfor %}
-  </ol>
-  <p class="panel-foot"><a href="{{ url_for('leaderboard') }}">Full leaderboard →</a></p>
-  {% else %}
-  <p class="empty-hint">No public scores yet — set a <a href="{{ url_for('goal_new') }}">public goal</a> and log workouts.</p>
-  {% endif %}
+  <ul class="mini-list" style="gap:0.75rem">
+    <li><a href="{{ url_for('workout_new') }}" class="btn-link">Log a workout</a></li>
+    <li><a href="{{ url_for('goals_list') }}" class="btn-link">View pacing chart & goals</a></li>
+    <li><a href="{{ url_for('profile') }}" class="btn-link">Update current 2k & WhatsApp</a></li>
+  </ul>
 </section>
 
 </div>

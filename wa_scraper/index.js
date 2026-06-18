@@ -5,14 +5,19 @@ const qrcode = require('qrcode-terminal');
 const mysql = require('mysql2/promise');
 const fs = require('fs');
 const path = require('path');
+const { spawn } = require('child_process');
 require('dotenv').config();
 
 // ── Config ─────────────────────────────────────────────────────────────────
 const MEDIA_DIR = path.resolve(
   process.env.WA_MEDIA_DIR || path.join(__dirname, 'media')
 );
-const GROUP_NAME = process.env.WA_GROUP_NAME || 'Workouts';
+const GROUP_NAME = process.env.WA_GROUP_NAME || 'Workouts 26-27';
 const INITIAL_LIMIT = parseInt(process.env.INITIAL_SCRAPE_LIMIT || '100', 10);
+const AUTO_OCR = process.env.AUTO_OCR !== '0';
+const PROJECT_ROOT = path.resolve(__dirname, '..');
+const PYTHON_BIN = process.env.PYTHON_PATH || (process.platform === 'win32' ? 'python' : 'python3');
+const RUN_OCR_SCRIPT = path.join(PROJECT_ROOT, 'run_ocr.py');
 const LOG_FILE = path.join(__dirname, 'scraper.log');
 
 if (!fs.existsSync(MEDIA_DIR)) {
@@ -46,6 +51,40 @@ function getPool() {
     });
   }
   return _pool;
+}
+
+// ── Automatic OCR (AWS Textract via run_ocr.py) ─────────────────────────────
+function triggerOcr(scanId) {
+  if (!AUTO_OCR) return;
+  if (!fs.existsSync(RUN_OCR_SCRIPT)) {
+    log('WARN', `AUTO_OCR enabled but ${RUN_OCR_SCRIPT} not found`);
+    return;
+  }
+
+  const child = spawn(PYTHON_BIN, [RUN_OCR_SCRIPT, String(scanId)], {
+    cwd: PROJECT_ROOT,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', (chunk) => { stdout += chunk; });
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+
+  child.on('close', (code) => {
+    const detail = (stdout || stderr).trim();
+    if (code === 0) {
+      log('INFO', `OCR complete for scan #${scanId}${detail ? `: ${detail}` : ''}`);
+    } else {
+      log('WARN', `OCR failed for scan #${scanId} (exit ${code})${detail ? `: ${detail}` : ''}`);
+    }
+  });
+
+  child.on('error', (err) => {
+    log('ERROR', `Could not start OCR for scan #${scanId}:`, err.message);
+  });
 }
 
 // ── WhatsApp client ─────────────────────────────────────────────────────────
@@ -140,14 +179,18 @@ async function saveMedia(msg) {
     .slice(0, 19)
     .replace('T', ' ');
 
-  await db.execute(
+  const [result] = await db.execute(
     `INSERT INTO pending_whatsapp_scans
        (image_path, sender_phone, received_at, wa_message_id)
      VALUES (?, ?, ?, ?)`,
     [filepath, senderPhone, receivedAt, msgId]
   );
 
-  log('INFO', `Saved image from ${senderPhone} → ${filename}`);
+  const scanId = result.insertId;
+  log('INFO', `Saved image from ${senderPhone} → ${filename} (scan #${scanId})`);
+  if (scanId) {
+    triggerOcr(scanId);
+  }
 }
 
 // ── Initial backfill ────────────────────────────────────────────────────────
@@ -181,4 +224,5 @@ async function scrapeRecent() {
 // ── Start ───────────────────────────────────────────────────────────────────
 log('INFO', `Starting WhatsApp scraper for group "${GROUP_NAME}"`);
 log('INFO', `Media directory: ${MEDIA_DIR}`);
+log('INFO', `Automatic OCR: ${AUTO_OCR ? 'on' : 'off'} (${PYTHON_BIN} ${RUN_OCR_SCRIPT})`);
 client.initialize();

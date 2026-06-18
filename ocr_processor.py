@@ -6,11 +6,6 @@ pending_whatsapp_scans table for admin review.
 
 Dependencies: boto3  (pip install boto3)
 
-Authentication — any standard AWS credential chain, evaluated in order:
-  1. AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (+ optional AWS_SESSION_TOKEN)
-  2. ~/.aws/credentials profile (AWS_PROFILE / AWS_DEFAULT_PROFILE)
-  3. IAM instance / task role (when running on EC2 / ECS / Lambda)
-
 Optional env vars:
   AWS_DEFAULT_REGION  — defaults to "us-east-1" if not set
 """
@@ -49,7 +44,6 @@ def _get_textract_client():
     region = os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
     _textract_client = boto3.client("textract", region_name=region)
     return _textract_client
-
 
 # ---------------------------------------------------------------------------
 # Text-extraction helpers
@@ -149,7 +143,210 @@ def run_ocr(image_path: str) -> str:
 
 def _normalize_phone(phone: str) -> str:
     """Strip all non-digit characters."""
-    return re.sub(r"\D", "", phone)
+    return re.sub(r"\D", "", phone or "")
+
+
+def normalize_phone(phone: str | None) -> str:
+    return _normalize_phone(phone or "")
+
+
+def scan_belongs_to_user(
+    scan: dict[str, Any],
+    username: str,
+    whatsapp_phone: str | None,
+    workout_username: str | None = None,
+) -> bool:
+    """True when a WhatsApp scan is associated with the logged-in athlete."""
+    if scan.get("matched_username") == username:
+        return True
+    if workout_username == username:
+        return True
+    user_phone = normalize_phone(whatsapp_phone)
+    sender = normalize_phone(scan.get("sender_phone"))
+    return bool(user_phone and sender and user_phone == sender)
+
+
+def _prepare_workout_values(
+    chart: dict[str, Any],
+    goal_target_seconds: float,
+    split_seconds: float,
+    workout_key: str,
+    duration_seconds: int | None,
+    distance_meters: int | None,
+) -> dict[str, Any]:
+    effective_dur = pacing.effective_workout_duration(
+        duration_seconds, distance_meters, split_seconds
+    )
+    stored_duration = duration_seconds
+    if stored_duration is None and effective_dur is not None:
+        stored_duration = effective_dur
+
+    is_steady = pacing.is_steady_state_workout(effective_dur)
+    expected = None
+    if not is_steady:
+        expected = pacing.expected_split_for_workout(
+            chart, float(goal_target_seconds), workout_key
+        )
+
+    rating, expected, delta = pacing.workout_scoring_fields(
+        split_seconds, expected, stored_duration, distance_meters
+    )
+    return {
+        "duration_seconds": stored_duration,
+        "effective_duration": effective_dur,
+        "is_steady": is_steady,
+        "pace_rating": rating,
+        "expected_split_seconds": expected,
+        "split_delta_seconds": delta,
+    }
+
+
+def save_scan_workout(
+    scan_id: int,
+    username: str,
+    split_seconds: float,
+    workout_key: str,
+    goal_id: int,
+    workout_date: str,
+    distance_meters: int | None = None,
+    duration_seconds: int | None = None,
+    label: str | None = None,
+    *,
+    update_detected: bool = True,
+) -> dict[str, Any]:
+    """
+    Create or update the erg_workouts record linked to a WhatsApp scan.
+    Returns {workout_id, rating, expected, steady, duration_seconds, created} or {error}.
+    """
+    chart = pacing.load_chart()
+    conn = get_db_connection()
+    if conn is None:
+        return {"error": "Database unavailable"}
+
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT * FROM pending_whatsapp_scans WHERE id = %s", (scan_id,))
+        scan = cur.fetchone()
+        if not scan:
+            return {"error": "Scan not found"}
+
+        cur.execute(
+            "SELECT id, target_seconds FROM erg_goals WHERE id = %s AND username = %s",
+            (goal_id, username),
+        )
+        goal = cur.fetchone()
+        if not goal:
+            return {"error": "Goal not found for this user"}
+
+        values = _prepare_workout_values(
+            chart,
+            float(goal["target_seconds"]),
+            split_seconds,
+            workout_key,
+            duration_seconds,
+            distance_meters,
+        )
+        if not values["is_steady"] and values["expected_split_seconds"] is None:
+            return {"error": "Cannot compute expected split from pacing chart"}
+
+        workout_label = label or "WhatsApp import"
+        note_suffix = f"WhatsApp scan #{scan_id}"
+        existing_id = scan.get("workout_id")
+        created = False
+
+        if existing_id:
+            cur.execute(
+                "SELECT id FROM erg_workouts WHERE id = %s AND username = %s",
+                (existing_id, username),
+            )
+            if not cur.fetchone():
+                return {"error": "Linked workout not found for your account"}
+
+            cur.execute(
+                """
+                UPDATE erg_workouts
+                SET goal_id=%s, workout_date=%s, label=%s, duration_seconds=%s,
+                    distance_meters=%s, avg_split_seconds=%s, workout_key=%s,
+                    pace_rating=%s, expected_split_seconds=%s, split_delta_seconds=%s,
+                    notes=%s
+                WHERE id=%s AND username=%s
+                """,
+                (
+                    goal_id,
+                    workout_date,
+                    workout_label,
+                    values["duration_seconds"],
+                    distance_meters,
+                    split_seconds,
+                    workout_key,
+                    values["pace_rating"],
+                    values["expected_split_seconds"],
+                    values["split_delta_seconds"],
+                    note_suffix,
+                    existing_id,
+                    username,
+                ),
+            )
+            workout_id = int(existing_id)
+        else:
+            cur.execute(
+                """
+                INSERT INTO erg_workouts (
+                    username, goal_id, workout_date, label,
+                    duration_seconds, distance_meters, avg_split_seconds, workout_key,
+                    pace_rating, expected_split_seconds, split_delta_seconds, notes
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    username,
+                    goal_id,
+                    workout_date,
+                    workout_label,
+                    values["duration_seconds"],
+                    distance_meters,
+                    split_seconds,
+                    workout_key,
+                    values["pace_rating"],
+                    values["expected_split_seconds"],
+                    values["split_delta_seconds"],
+                    note_suffix,
+                ),
+            )
+            workout_id = int(cur.lastrowid)
+            created = True
+
+        scan_updates = (
+            "status='matched', workout_id=%s, matched_username=%s, processed_at=NOW()"
+        )
+        scan_params: list[Any] = [workout_id, username]
+        if update_detected:
+            scan_updates += ", detected_split_seconds=%s, detected_distance_meters=%s"
+            scan_params.extend([split_seconds, distance_meters])
+        scan_params.append(scan_id)
+        cur.execute(
+            f"UPDATE pending_whatsapp_scans SET {scan_updates} WHERE id = %s",
+            tuple(scan_params),
+        )
+        conn.commit()
+        return {
+            "workout_id": workout_id,
+            "rating": values["pace_rating"],
+            "expected": values["expected_split_seconds"],
+            "steady": values["is_steady"],
+            "duration_seconds": values["effective_duration"],
+            "created": created,
+        }
+
+    except mysql.connector.Error as err:
+        conn.rollback()
+        return {"error": str(err)}
+
+    finally:
+        try:
+            cur.close()
+        except Exception:  # noqa: BLE001
+            pass
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -248,14 +445,21 @@ def process_scan(scan_id: int) -> dict[str, Any]:
 
 
 def process_all_pending() -> dict[str, int]:
-    """OCR every scan whose status is 'pending'. Returns {processed, errors}."""
+    """OCR every scan that has never been processed. Returns {processed, errors}."""
     conn = get_db_connection()
     if conn is None:
         return {"processed": 0, "errors": 0}
 
     try:
         cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT id FROM pending_whatsapp_scans WHERE status = 'pending'")
+        cur.execute(
+            """
+            SELECT id FROM pending_whatsapp_scans
+            WHERE status = 'pending'
+              AND ocr_raw_text IS NULL
+              AND (admin_notes IS NULL OR admin_notes NOT LIKE 'OCR error:%')
+            """
+        )
         ids = [row["id"] for row in cur.fetchall()]
         cur.close()
     finally:
@@ -281,76 +485,18 @@ def approve_scan(
     goal_id: int,
     workout_date: str,
     distance_meters: int | None = None,
+    duration_seconds: int | None = None,
     label: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Convert an approved scan into an erg_workouts record.
-    Returns {workout_id, rating, expected} or {error: str}.
-    """
-    chart = pacing.load_chart()
-    conn = get_db_connection()
-    if conn is None:
-        return {"error": "Database unavailable"}
-
-    try:
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            "SELECT target_seconds FROM erg_goals WHERE id = %s AND username = %s",
-            (goal_id, username),
-        )
-        goal = cur.fetchone()
-        if not goal:
-            return {"error": "Goal not found for this user"}
-
-        expected = pacing.expected_split_for_workout(
-            chart, float(goal["target_seconds"]), workout_key
-        )
-        if expected is None:
-            return {"error": "Cannot compute expected split from pacing chart"}
-
-        rating = pacing.pace_rating(split_seconds, expected)
-        delta = split_seconds - expected
-
-        cur.execute(
-            """
-            INSERT INTO erg_workouts (
-                username, goal_id, workout_date, label,
-                distance_meters, avg_split_seconds, workout_key,
-                pace_rating, expected_split_seconds, split_delta_seconds, notes
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """,
-            (
-                username,
-                goal_id,
-                workout_date,
-                label or "WhatsApp import",
-                distance_meters,
-                split_seconds,
-                workout_key,
-                rating,
-                expected,
-                delta,
-                f"Auto-imported from WhatsApp (scan #{scan_id})",
-            ),
-        )
-        workout_id = cur.lastrowid
-
-        cur.execute(
-            "UPDATE pending_whatsapp_scans "
-            "SET status='matched', workout_id=%s, matched_username=%s, processed_at=NOW() "
-            "WHERE id = %s",
-            (workout_id, username, scan_id),
-        )
-        conn.commit()
-        return {"workout_id": workout_id, "rating": rating, "expected": expected}
-
-    except mysql.connector.Error as err:
-        conn.rollback()
-        return {"error": str(err)}
-
-    finally:
-        try:
-            cur.close()
-        except Exception:  # noqa: BLE001
-            pass
-        conn.close()
+    """Convert an approved scan into an erg_workouts record (admin)."""
+    return save_scan_workout(
+        scan_id,
+        username,
+        split_seconds,
+        workout_key,
+        goal_id,
+        workout_date,
+        distance_meters=distance_meters,
+        duration_seconds=duration_seconds,
+        label=label,
+    )

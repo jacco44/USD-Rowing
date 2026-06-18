@@ -4,7 +4,8 @@ import json
 import os
 import re
 import secrets
-from collections import defaultdict
+import threading
+import time
 from datetime import date, datetime, timedelta
 from datetime import date as date_class  # alias used in goals_list for clarity
 from functools import wraps
@@ -60,14 +61,45 @@ def format_minutes(minutes: float) -> str:
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
 app.jinja_env.globals["format_split"] = pacing.format_split
-app.jinja_env.globals["format_pace_score"] = pacing.format_pace_score
-app.jinja_env.globals["workout_pace_score"] = pacing.workout_pace_score
 app.jinja_env.globals["format_minutes"] = format_minutes
+app.jinja_env.globals["is_steady_workout"] = pacing.is_steady_state_workout
+app.jinja_env.globals["effective_workout_duration"] = pacing.effective_workout_duration
 
 
 @app.context_processor
 def inject_admin_flag():
     return {"is_admin": is_admin()}
+
+
+_AUTO_OCR_INTERVAL_SECONDS = max(15, int(os.environ.get("AUTO_OCR_INTERVAL_SECONDS", "45")))
+
+
+def _auto_ocr_loop() -> None:
+    while True:
+        time.sleep(_AUTO_OCR_INTERVAL_SECONDS)
+        if os.environ.get("AUTO_OCR", "1") == "0":
+            continue
+        try:
+            result = ocr_processor.process_all_pending()
+            if result["processed"]:
+                print(f"Auto OCR: processed {result['processed']} scan(s)")
+        except Exception as err:  # noqa: BLE001
+            print(f"Auto OCR error: {err}")
+
+
+def _start_auto_ocr_poller() -> None:
+    if os.environ.get("AUTO_OCR", "1") == "0":
+        return
+    thread = threading.Thread(target=_auto_ocr_loop, daemon=True, name="auto-ocr")
+    thread.start()
+
+
+# Skip Flask debug-reloader parent to avoid duplicate pollers.
+_is_debug_reloader_parent = (
+    os.environ.get("WERKZEUG_RUN_MAIN") is None and os.environ.get("FLASK_DEBUG") == "1"
+)
+if not _is_debug_reloader_parent:
+    _start_auto_ocr_poller()
 
 TRACKER_TABLES_MSG = (
     "Tracker tables are missing. Apply schema.sql to your MySQL database to enable goals and workouts."
@@ -499,17 +531,31 @@ def dashboard():
     user = session["user"]
     chart = pacing.load_chart()
     workout_types = chart.get("workout_types", {})
-    stats = {"goals": 0, "workouts_week": 0, "avg_rating": None, "best_rating_week": None, "streak": 0}
+    stats = {"goals": 0, "workouts_week": 0, "steady_minutes_week": 0}
     recent_workouts = []
-    leaderboard_preview = []
+    primary_goal = None
+    goal_plan = None
+    current_2k_source = None
     conn = get_db_connection()
     if conn is None:
         flash("Unable to reach the database.", "error")
     else:
         try:
+            _ensure_user_profile_columns(conn)
             cur = conn.cursor(dictionary=True)
             cur.execute(
-                "SELECT COUNT(*) AS c FROM erg_goals WHERE username = %s",
+                "SELECT two_k_seconds FROM rowing_users WHERE username = %s",
+                (user,),
+            )
+            profile_row = cur.fetchone()
+            profile_two_k = (
+                float(profile_row["two_k_seconds"])
+                if profile_row and profile_row.get("two_k_seconds") is not None
+                else None
+            )
+
+            cur.execute(
+                "SELECT COUNT(*) AS c FROM erg_goals WHERE username = %s AND is_completed = 0",
                 (user,),
             )
             stats["goals"] = cur.fetchone()["c"]
@@ -523,36 +569,56 @@ def dashboard():
             stats["workouts_week"] = cur.fetchone()["c"]
             cur.execute(
                 """
-                SELECT AVG(pace_rating) AS a FROM erg_workouts
-                WHERE username = %s AND workout_date >= DATE_SUB(CURDATE(), INTERVAL 14 DAY)
+                SELECT COALESCE(SUM(duration_seconds), 0) / 60.0 AS steady_min
+                FROM erg_workouts
+                WHERE username = %s
+                  AND workout_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
+                  AND duration_seconds > %s
+                """,
+                (user, pacing.STEADY_STATE_MIN_DURATION_SECONDS),
+            )
+            row = cur.fetchone()
+            if row and row["steady_min"] is not None:
+                stats["steady_minutes_week"] = int(round(float(row["steady_min"])))
+
+            cur.execute(
+                """
+                SELECT id, title, target_seconds, target_date
+                FROM erg_goals
+                WHERE username = %s AND is_completed = 0
+                ORDER BY target_date ASC
+                LIMIT 1
                 """,
                 (user,),
             )
-            row = cur.fetchone()
-            if row and row["a"] is not None:
-                stats["avg_rating"] = float(row["a"])
+            primary_goal = cur.fetchone()
+            if primary_goal:
+                td = primary_goal.get("target_date")
+                days_left = (td - date.today()).days if td else None
+                primary_goal["days_left"] = days_left
+
             cur.execute(
                 """
-                SELECT MAX(pace_rating) AS best FROM erg_workouts
-                WHERE username = %s AND workout_date >= DATE_SUB(CURDATE(), INTERVAL 7 DAY)
-                """,
-                (user,),
-            )
-            row = cur.fetchone()
-            if row and row["best"] is not None:
-                stats["best_rating_week"] = int(row["best"])
-            cur.execute(
-                """
-                SELECT id, workout_date, avg_split_seconds, pace_rating, split_delta_seconds,
-                       label, workout_key
+                SELECT id, workout_date, avg_split_seconds, label, workout_key,
+                       duration_seconds, distance_meters
                 FROM erg_workouts WHERE username = %s
-                ORDER BY workout_date DESC, id DESC LIMIT 6
+                ORDER BY workout_date DESC, id DESC LIMIT 12
                 """,
                 (user,),
             )
             recent_workouts = cur.fetchall()
-            leaderboard_preview = _leaderboard_rows(limit=5, days=30)
             cur.close()
+
+            current_2k, current_2k_source = pacing.pick_current_2k_seconds(
+                chart, profile_two_k, recent_workouts
+            )
+            if primary_goal and primary_goal.get("target_seconds") is not None:
+                goal_plan = pacing.build_goal_plan(
+                    chart,
+                    float(primary_goal["target_seconds"]),
+                    current_2k,
+                    primary_goal.get("days_left"),
+                )
         except mysql.connector.Error as err:
             if getattr(err, "errno", None) != 1146:
                 raise
@@ -567,10 +633,11 @@ def dashboard():
         workout_types=workout_types,
         stats=stats,
         recent_workouts=recent_workouts,
-        leaderboard_preview=leaderboard_preview,
+        primary_goal=primary_goal,
+        goal_plan=goal_plan,
+        current_2k_source=current_2k_source,
         celebrate=celebrate,
         format_split=pacing.format_split,
-        rating_label=pacing.rating_label,
     )
 
 
@@ -614,11 +681,54 @@ def goals_list():
         for g in rows
         if g.get("target_seconds") is not None and not g.get("is_completed")
     ]
+    goal_plans: dict[int, dict] = {}
+    profile_two_k = None
+    recent_for_estimate: list = []
+    conn2 = get_db_connection()
+    if conn2:
+        try:
+            _ensure_user_profile_columns(conn2)
+            cur = conn2.cursor(dictionary=True)
+            cur.execute(
+                "SELECT two_k_seconds FROM rowing_users WHERE username = %s",
+                (user,),
+            )
+            prow = cur.fetchone()
+            if prow and prow.get("two_k_seconds") is not None:
+                profile_two_k = float(prow["two_k_seconds"])
+            cur.execute(
+                """
+                SELECT workout_key, avg_split_seconds, duration_seconds, distance_meters
+                FROM erg_workouts WHERE username = %s
+                ORDER BY workout_date DESC, id DESC LIMIT 12
+                """,
+                (user,),
+            )
+            recent_for_estimate = cur.fetchall()
+            cur.close()
+        except mysql.connector.Error:
+            pass
+        finally:
+            conn2.close()
+
+    current_2k, _ = pacing.pick_current_2k_seconds(chart, profile_two_k, recent_for_estimate)
+    today = date_class.today()
+    for g in rows:
+        if g.get("is_completed") or g.get("target_seconds") is None:
+            continue
+        td = g.get("target_date")
+        days_left = (td - today).days if td else None
+        goal_plans[g["id"]] = pacing.build_goal_plan(
+            chart, float(g["target_seconds"]), current_2k, days_left
+        )
+
     return render_template(
         "goals.html",
         goals=rows,
+        goal_plans=goal_plans,
+        current_2k_source="profile" if profile_two_k else ("workout" if current_2k else None),
         format_split=pacing.format_split,
-        today=date_class.today(),
+        today=today,
         pacing_chart=pacing_chart,
         goal_targets=goal_targets,
         chart_row_matches_goal=pacing.chart_row_matches_goal,
@@ -644,7 +754,7 @@ def goal_new():
             flash("Choose a target date for your goal.", "error")
             return render_template("goal_new.html", today_iso=date.today().isoformat()), 400
 
-        is_public = 1 if request.form.get("is_public") else 0
+        is_public = 0
 
         conn = get_db_connection()
         if conn is None:
@@ -693,6 +803,7 @@ def workouts_list():
                 """
                 SELECT w.id, w.workout_date, w.label, w.avg_split_seconds, w.pace_rating,
                        w.expected_split_seconds, w.split_delta_seconds, w.workout_key,
+                       w.duration_seconds, w.distance_meters,
                        g.title AS goal_title
                 FROM erg_workouts w
                 LEFT JOIN erg_goals g ON w.goal_id = g.id
@@ -720,7 +831,6 @@ def workouts_list():
         workouts=rows,
         workout_types=chart.get("workout_types", {}),
         format_split=pacing.format_split,
-        rating_label=pacing.rating_label,
         events_json=json.dumps(cal_events),
         cal_year=cal_y,
         cal_month=cal_m,
@@ -759,7 +869,7 @@ def workout_new():
 
     if request.method == "POST":
         if not goals:
-            flash("Create a goal first so we can score your split against the pacing chart.", "error")
+            flash("Create a goal first so we can compare your splits to the pacing chart.", "error")
             return redirect(url_for("goal_new"))
 
         goal_id = request.form.get("goal_id") or ""
@@ -797,6 +907,12 @@ def workout_new():
         dist_raw = (request.form.get("distance_meters") or "").strip()
         distance_meters = int(dist_raw) if dist_raw.isdigit() else None
 
+        effective_dur = pacing.effective_workout_duration(
+            duration_seconds, distance_meters, actual_split
+        )
+        if duration_seconds is None and effective_dur is not None:
+            duration_seconds = effective_dur
+
         conn = get_db_connection()
         if conn is None:
             flash("Database unavailable.", "error")
@@ -829,24 +945,28 @@ def workout_new():
                     400,
                 )
 
-            expected = pacing.expected_split_for_workout(
-                chart, float(g_row["target_seconds"]), wk_key
-            )
-            if expected is None:
-                flash("Could not compute an expected split from the pacing chart.", "error")
-                return (
-                    render_template(
-                        "workout_new.html",
-                        goals=goals,
-                        workout_types=workout_types,
-                        default_key=default_key,
-                        today_iso=date.today().isoformat(),
-                    ),
-                    500,
+            is_steady = pacing.is_steady_state_workout(effective_dur)
+            expected = None
+            if not is_steady:
+                expected = pacing.expected_split_for_workout(
+                    chart, float(g_row["target_seconds"]), wk_key
                 )
+                if expected is None:
+                    flash("Could not compute an expected split from the pacing chart.", "error")
+                    return (
+                        render_template(
+                            "workout_new.html",
+                            goals=goals,
+                            workout_types=workout_types,
+                            default_key=default_key,
+                            today_iso=date.today().isoformat(),
+                        ),
+                        500,
+                    )
 
-            rating = pacing.pace_rating(actual_split, expected)
-            delta = actual_split - expected
+            rating, expected, delta = pacing.workout_scoring_fields(
+                actual_split, expected, duration_seconds, distance_meters
+            )
 
             cur.execute(
                 """
@@ -875,13 +995,20 @@ def workout_new():
             )
             conn.commit()
             _update_streak(conn, user, workout_date)
-            if rating == 5:
-                session["celebrate"] = "perfect_workout"
-            flash(
-                f"Workout logged — {pacing.rating_label(rating)} "
-                f"(target split {pacing.format_split(expected)}).",
-                "success",
-            )
+            if is_steady:
+                flash(
+                    f"Steady workout logged — {format_minutes(effective_dur / 60.0)} "
+                    "toward your weekly target.",
+                    "success",
+                )
+            else:
+                if delta is not None and delta <= 0:
+                    session["celebrate"] = "perfect_workout"
+                flash(
+                    f"Workout logged — target split {pacing.format_split(expected)} "
+                    f"({delta:+.1f}s vs chart).",
+                    "success",
+                )
             return redirect(url_for("dashboard"))
         except mysql.connector.Error as err:
             conn.rollback()
@@ -964,7 +1091,7 @@ def goal_edit(goal_id):
                 format_split=pacing.format_split,
             ), 400
 
-        is_public = 1 if request.form.get("is_public") else 0
+        is_public = 0
 
         conn2 = get_db_connection()
         if conn2 is None:
@@ -1046,155 +1173,82 @@ def goal_complete(goal_id):
     return redirect(url_for("goals_list"))
 
 
-def _team_goal_stats(days: int = 30) -> dict:
-    """Aggregate total team workout minutes for the collective fill-meter goal."""
-    target_minutes = int(os.environ.get("TEAM_GOAL_MINUTES", 5000))
-    conn = get_db_connection()
-    if conn is None:
-        return {"total_minutes": 0.0, "target_minutes": target_minutes, "progress_pct": 0.0, "athlete_count": 0}
-    try:
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            """
-            SELECT
-                COALESCE(SUM(duration_seconds), 0) / 60.0 AS total_minutes,
-                COUNT(DISTINCT username) AS athlete_count
-            FROM erg_workouts
-            WHERE duration_seconds IS NOT NULL
-              AND duration_seconds > 0
-              AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
-            """,
-            (days,),
-        )
-        row = cur.fetchone()
-        cur.close()
-    except mysql.connector.Error as err:
-        if getattr(err, "errno", None) != 1146:
-            raise
-        return {"total_minutes": 0.0, "target_minutes": target_minutes, "progress_pct": 0.0, "athlete_count": 0}
-    finally:
-        conn.close()
-
-    total = float(row["total_minutes"]) if row else 0.0
-    athlete_count = int(row["athlete_count"]) if row else 0
-    pct = min(100.0, (total / target_minutes) * 100) if target_minutes > 0 else 0.0
-    return {
-        "total_minutes": total,
-        "target_minutes": target_minutes,
-        "progress_pct": pct,
-        "athlete_count": athlete_count,
-    }
-
-
-def _tut_leaderboard_rows(limit: int = 40, days: int = 30) -> list[dict]:
-    """Rank athletes by total workout minutes (time under tension) over recent days."""
-    conn = get_db_connection()
-    if conn is None:
-        return []
-    try:
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            """
-            SELECT
-                username,
-                ROUND(SUM(duration_seconds) / 60.0, 1) AS total_minutes,
-                COUNT(*) AS workout_count,
-                MAX(workout_date) AS last_workout
-            FROM erg_workouts
-            WHERE duration_seconds IS NOT NULL
-              AND duration_seconds > 0
-              AND workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
-            GROUP BY username
-            ORDER BY total_minutes DESC
-            LIMIT %s
-            """,
-            (days, limit),
-        )
-        rows = cur.fetchall()
-        cur.close()
-    except mysql.connector.Error as err:
-        if getattr(err, "errno", None) != 1146:
-            raise
-        return []
-    finally:
-        conn.close()
-
-    return [
-        {
-            "username": r["username"],
-            "total_minutes": float(r["total_minutes"]),
-            "workout_count": int(r["workout_count"]),
-            "last_workout": r["last_workout"],
-        }
-        for r in rows
-    ]
-
-
-def _leaderboard_rows(limit: int = 40, days: int = 30) -> list[dict]:
-    """Aggregate public-goal workout scores (continuous 1.00–5.00) per athlete."""
-    conn = get_db_connection()
-    if conn is None:
-        return []
-    try:
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            """
-            SELECT w.username, w.split_delta_seconds, w.pace_rating, w.workout_date
-            FROM erg_workouts w
-            INNER JOIN erg_goals g ON w.goal_id = g.id AND g.is_public = 1
-            WHERE w.workout_date >= DATE_SUB(CURDATE(), INTERVAL %s DAY)
-            """,
-            (days,),
-        )
-        raw = cur.fetchall()
-        cur.close()
-    except mysql.connector.Error as err:
-        if getattr(err, "errno", None) != 1146:
-            raise
-        flash(TRACKER_TABLES_MSG, "error")
-        return []
-    finally:
-        conn.close()
-
-    buckets: dict[str, dict] = defaultdict(lambda: {"scores": [], "last": None})
-    for row in raw:
-        user = row["username"]
-        buckets[user]["scores"].append(
-            pacing.workout_pace_score(row.get("split_delta_seconds"), row.get("pace_rating"))
-        )
-        wd = row["workout_date"]
-        if buckets[user]["last"] is None or wd > buckets[user]["last"]:
-            buckets[user]["last"] = wd
-
-    rows = []
-    for username, data in buckets.items():
-        if not data["scores"]:
-            continue
-        avg = sum(data["scores"]) / len(data["scores"])
-        rows.append(
-            {
-                "username": username,
-                "avg_rating": avg,
-                "workouts": len(data["scores"]),
-                "last_workout": data["last"],
-            }
-        )
-    rows.sort(key=lambda r: (-r["avg_rating"], -r["workouts"]))
-    return rows[:limit]
-
-
 @login_required
 @app.route("/leaderboard")
 def leaderboard():
-    rows = _leaderboard_rows(limit=40, days=30)
-    tut_rows = _tut_leaderboard_rows(limit=40, days=30)
-    team_goal = _team_goal_stats(days=30)
+    return redirect(url_for("dashboard"))
+
+
+@login_required
+@app.route("/profile", methods=["GET", "POST"])
+def profile():
+    user = session["user"]
+    current_phone = ""
+    current_two_k = ""
+    conn = get_db_connection()
+    if conn is None:
+        flash("Database unavailable.", "error")
+        return render_template("profile.html", current_phone=current_phone, current_two_k=current_two_k)
+
+    if request.method == "POST":
+        phone_raw = (request.form.get("whatsapp_phone") or "").strip()
+        phone_norm = re.sub(r"\D", "", phone_raw) or None
+        two_k_raw = (request.form.get("two_k") or "").strip()
+        two_k_seconds = None
+        if two_k_raw:
+            try:
+                two_k_seconds = int(round(pacing.parse_goal_2k(two_k_raw)))
+            except ValueError:
+                flash("Enter a valid current 2k time (e.g. 6:45.0).", "error")
+                return redirect(url_for("profile"))
+            if two_k_seconds < 300 or two_k_seconds > 1500:
+                flash("2k time should be between 5:00 and 25:00.", "error")
+                return redirect(url_for("profile"))
+        try:
+            _ensure_whatsapp_phone_column(conn)
+            _ensure_user_profile_columns(conn)
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE rowing_users
+                SET whatsapp_phone = %s, two_k_seconds = %s
+                WHERE username = %s
+                """,
+                (phone_norm, two_k_seconds, user),
+            )
+            conn.commit()
+            cur.close()
+            flash("Profile updated.", "success")
+        except mysql.connector.Error as err:
+            conn.rollback()
+            print(f"Profile update error: {err}")
+            flash("Could not update profile.", "error")
+        finally:
+            conn.close()
+        return redirect(url_for("profile"))
+
+    try:
+        _ensure_whatsapp_phone_column(conn)
+        _ensure_user_profile_columns(conn)
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT whatsapp_phone, two_k_seconds FROM rowing_users WHERE username = %s",
+            (user,),
+        )
+        row = cur.fetchone()
+        if row:
+            if row.get("whatsapp_phone"):
+                current_phone = row["whatsapp_phone"]
+            if row.get("two_k_seconds") is not None:
+                current_two_k = pacing.format_split(float(row["two_k_seconds"]))
+        cur.close()
+    except mysql.connector.Error as err:
+        print(f"Profile load error: {err}")
+    finally:
+        conn.close()
+
     return render_template(
-        "leaderboard.html",
-        rows=rows,
-        tut_rows=tut_rows,
-        team_goal=team_goal,
-        scoring_method=pacing.SCORING_METHOD,
+        "profile.html", current_phone=current_phone, current_two_k=current_two_k
     )
 
 
@@ -1233,7 +1287,7 @@ def _calendar_month_bounds(req, today: date) -> tuple[int, int, date, date]:
 
 
 def _workout_calendar_events_for_month(user: str, first: date, last: date) -> list[dict]:
-    scores: dict[date, int] = {}
+    day_stats: dict[date, dict] = {}
     conn = get_db_connection()
     if conn is None:
         flash("Unable to reach the database.", "error")
@@ -1242,7 +1296,9 @@ def _workout_calendar_events_for_month(user: str, first: date, last: date) -> li
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
-            SELECT workout_date, ROUND(AVG(pace_rating)) AS day_tier
+            SELECT workout_date,
+                   COUNT(*) AS n,
+                   COALESCE(SUM(duration_seconds), 0) / 60.0 AS total_min
             FROM erg_workouts
             WHERE username = %s AND workout_date >= %s AND workout_date <= %s
             GROUP BY workout_date
@@ -1251,8 +1307,10 @@ def _workout_calendar_events_for_month(user: str, first: date, last: date) -> li
         )
         for row in cur.fetchall():
             dkey = _row_workout_date_as_date(row["workout_date"])
-            t = int(row["day_tier"])
-            scores[dkey] = max(1, min(5, t))
+            day_stats[dkey] = {
+                "count": int(row["n"]),
+                "minutes": float(row["total_min"] or 0),
+            }
         cur.close()
     except mysql.connector.Error as err:
         if getattr(err, "errno", None) != 1146:
@@ -1263,11 +1321,16 @@ def _workout_calendar_events_for_month(user: str, first: date, last: date) -> li
         conn.close()
 
     events = []
-    for d, tier in scores.items():
-        bg, txt, border = _WORKOUT_CAL_TIER_COLORS.get(tier, _WORKOUT_CAL_TIER_COLORS[4])
+    for d, info in day_stats.items():
+        n = info["count"]
+        mins = info["minutes"]
+        title = f"{n} workout{'s' if n != 1 else ''}"
+        if mins >= 1:
+            title += f" · {format_minutes(mins)}"
+        bg, txt, border = _WORKOUT_CAL_TIER_COLORS.get(4, _WORKOUT_CAL_TIER_COLORS[4])
         events.append({
             "id": f"workout-{d.isoformat()}",
-            "title": f"Score {tier} — {pacing.rating_label(tier)}",
+            "title": title,
             "start": d.isoformat(),
             "allDay": True,
             "backgroundColor": bg,
@@ -1291,55 +1354,309 @@ def logout():
     return redirect(url_for("login"))
 
 
-# ── Profile ─────────────────────────────────────────────────────────────────
+# ── My WhatsApp scans ─────────────────────────────────────────────────────────
+
+
+def _user_whatsapp_phone(conn, username: str) -> str | None:
+    _ensure_whatsapp_phone_column(conn)
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        "SELECT whatsapp_phone FROM rowing_users WHERE username = %s",
+        (username,),
+    )
+    row = cur.fetchone()
+    cur.close()
+    phone = row.get("whatsapp_phone") if row else None
+    return phone or None
+
+
+def _load_user_scan(conn, username: str, scan_id: int) -> tuple[dict | None, dict | None]:
+    """Return (scan row, linked workout row) if the athlete may access this scan."""
+    phone = _user_whatsapp_phone(conn, username)
+    cur = conn.cursor(dictionary=True)
+    cur.execute("SELECT * FROM pending_whatsapp_scans WHERE id = %s", (scan_id,))
+    scan = cur.fetchone()
+    workout = None
+    if scan and scan.get("workout_id"):
+        cur.execute(
+            """
+            SELECT id, username, goal_id, workout_date, label, duration_seconds,
+                   distance_meters, avg_split_seconds, workout_key, pace_rating,
+                   expected_split_seconds, split_delta_seconds
+            FROM erg_workouts WHERE id = %s
+            """,
+            (scan["workout_id"],),
+        )
+        workout = cur.fetchone()
+    cur.close()
+
+    if not scan or scan.get("status") == "rejected":
+        return None, None
+    if not ocr_processor.scan_belongs_to_user(
+        scan,
+        username,
+        phone,
+        workout.get("username") if workout else None,
+    ):
+        return None, None
+    return scan, workout
+
 
 @login_required
-@app.route("/profile", methods=["GET", "POST"])
-def profile():
+@app.route("/my-scans")
+def my_scans_list():
     user = session["user"]
-    current_phone = ""
+    rows: list = []
+    conn = get_db_connection()
+    if conn is None:
+        flash("Unable to reach the database.", "error")
+    else:
+        try:
+            phone = _user_whatsapp_phone(conn, user)
+            sender_norm = ocr_processor.normalize_phone(phone)
+            cur = conn.cursor(dictionary=True)
+            cur.execute(
+                """
+                SELECT s.id, s.received_at, s.status, s.sender_phone,
+                       s.detected_split_seconds, s.detected_distance_meters, s.workout_id,
+                       w.workout_date, w.avg_split_seconds AS logged_split,
+                       w.distance_meters AS logged_distance, w.duration_seconds AS logged_duration,
+                       w.workout_key, w.label AS workout_label,
+                       g.title AS goal_title
+                FROM pending_whatsapp_scans s
+                LEFT JOIN erg_workouts w ON w.id = s.workout_id AND w.username = %s
+                LEFT JOIN erg_goals g ON g.id = w.goal_id
+                WHERE s.status != 'rejected'
+                  AND (
+                    s.matched_username = %s
+                    OR w.id IS NOT NULL
+                    OR (%s != '' AND REGEXP_REPLACE(s.sender_phone, '[^0-9]', '') = %s)
+                  )
+                ORDER BY s.received_at DESC
+                LIMIT 80
+                """,
+                (user, user, sender_norm, sender_norm),
+            )
+            rows = cur.fetchall()
+            cur.close()
+        except mysql.connector.Error as err:
+            if getattr(err, "errno", None) == 1146:
+                flash("WhatsApp scan tables are missing. Apply wa_schema.sql to your database.", "error")
+            else:
+                raise
+        finally:
+            conn.close()
+
+    return render_template(
+        "my_scans.html",
+        scans=rows,
+        format_split=pacing.format_split,
+        format_minutes=format_minutes,
+        is_steady_workout=pacing.is_steady_state_workout,
+        effective_workout_duration=pacing.effective_workout_duration,
+    )
+
+
+@login_required
+@app.route("/my-scans/<int:scan_id>/image")
+def my_scan_image(scan_id):
+    user = session["user"]
+    conn = get_db_connection()
+    if conn is None:
+        return "Database unavailable", 503
+    try:
+        scan, _ = _load_user_scan(conn, user, scan_id)
+    finally:
+        conn.close()
+    if not scan:
+        return "Not found", 404
+    image_path = scan.get("image_path")
+    if not image_path or not Path(image_path).exists():
+        return "Image not found", 404
+    return send_file(image_path)
+
+
+@login_required
+@app.route("/my-scans/<int:scan_id>", methods=["GET", "POST"])
+def my_scan_detail(scan_id):
+    user = session["user"]
+    chart = pacing.load_chart()
+    workout_types = chart.get("workout_types", {})
+    default_key = chart.get("default_steady_workout_key", "split_offset_plus_18")
+
     conn = get_db_connection()
     if conn is None:
         flash("Database unavailable.", "error")
-        return render_template("profile.html", current_phone=current_phone)
+        return redirect(url_for("my_scans_list"))
+
+    scan, workout = _load_user_scan(conn, user, scan_id)
+    if not scan:
+        conn.close()
+        flash("Scan not found or not linked to your account.", "error")
+        return redirect(url_for("my_scans_list"))
+
+    goals: list = []
+    try:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT id, title, target_seconds, target_date
+            FROM erg_goals WHERE username = %s AND is_completed = 0
+            ORDER BY target_date ASC
+            """,
+            (user,),
+        )
+        goals = cur.fetchall()
+        cur.close()
+    except mysql.connector.Error:
+        pass
 
     if request.method == "POST":
-        phone_raw = (request.form.get("whatsapp_phone") or "").strip()
-        phone_norm = re.sub(r"\D", "", phone_raw) or None
+        split_raw = (request.form.get("avg_split") or "").strip()
+        workout_key = (request.form.get("workout_key") or default_key).strip()
+        goal_id_raw = (request.form.get("goal_id") or "").strip()
+        workout_date = request.form.get("workout_date") or date.today().isoformat()
+        dist_raw = (request.form.get("distance_meters") or "").strip()
+        dur_raw = (request.form.get("duration_seconds") or "").strip()
+        label = (request.form.get("label") or "").strip() or None
+        if not goal_id_raw and workout and workout.get("goal_id"):
+            goal_id_raw = str(workout["goal_id"])
+        log_workout = bool(goal_id_raw)
+
         try:
-            _ensure_whatsapp_phone_column(conn)
+            split_seconds = pacing.parse_split(split_raw)
+        except ValueError:
+            flash("Enter a valid split like 1:58.5.", "error")
+            return redirect(url_for("my_scan_detail", scan_id=scan_id))
+
+        distance_meters = int(dist_raw) if dist_raw.isdigit() else None
+        duration_seconds = int(dur_raw) if dur_raw.isdigit() else None
+
+        if workout_key not in workout_types:
+            workout_key = default_key
+
+        try:
             cur = conn.cursor()
             cur.execute(
-                "UPDATE rowing_users SET whatsapp_phone = %s WHERE username = %s",
-                (phone_norm, user),
+                """
+                UPDATE pending_whatsapp_scans
+                SET detected_split_seconds = %s, detected_distance_meters = %s
+                WHERE id = %s
+                """,
+                (split_seconds, distance_meters, scan_id),
             )
             conn.commit()
             cur.close()
-            flash("Profile updated.", "success")
-        except mysql.connector.Error as err:
+        except mysql.connector.Error:
             conn.rollback()
-            print(f"Profile update error: {err}")
-            flash("Could not update profile.", "error")
-        finally:
+            flash("Could not update scan values.", "error")
             conn.close()
-        return redirect(url_for("profile"))
+            return redirect(url_for("my_scan_detail", scan_id=scan_id))
 
-    try:
-        _ensure_whatsapp_phone_column(conn)
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            "SELECT whatsapp_phone FROM rowing_users WHERE username = %s", (user,)
-        )
-        row = cur.fetchone()
-        if row and row.get("whatsapp_phone"):
-            current_phone = row["whatsapp_phone"]
-        cur.close()
-    except mysql.connector.Error as err:
-        print(f"Profile load error: {err}")
-    finally:
+        if log_workout or workout:
+            if not goal_id_raw:
+                flash("Choose a goal to log or update this workout.", "error")
+                conn.close()
+                return redirect(url_for("my_scan_detail", scan_id=scan_id))
+            try:
+                goal_id = int(goal_id_raw)
+            except ValueError:
+                flash("Choose a valid goal.", "error")
+                conn.close()
+                return redirect(url_for("my_scan_detail", scan_id=scan_id))
+
+            result = ocr_processor.save_scan_workout(
+                scan_id,
+                user,
+                split_seconds,
+                workout_key,
+                goal_id,
+                workout_date,
+                distance_meters=distance_meters,
+                duration_seconds=duration_seconds,
+                label=label,
+            )
+            if not result.get("error"):
+                _update_streak(conn, user, workout_date)
+            conn.close()
+            if result.get("error"):
+                flash(f"Could not save workout: {result['error']}", "error")
+                return redirect(url_for("my_scan_detail", scan_id=scan_id))
+
+            if result.get("steady"):
+                flash(
+                    f"Workout updated — {format_minutes((result.get('duration_seconds') or 0) / 60.0)} "
+                    "steady volume logged.",
+                    "success",
+                )
+            elif result.get("expected") is not None:
+                flash(
+                    f"Workout updated — target split {pacing.format_split(result['expected'])}.",
+                    "success",
+                )
+            else:
+                flash("Workout saved.", "success")
+            return redirect(url_for("my_scan_detail", scan_id=scan_id))
+
         conn.close()
+        flash("Scan values updated. Choose a goal and save again to log as a workout.", "success")
+        return redirect(url_for("my_scan_detail", scan_id=scan_id))
 
-    return render_template("profile.html", current_phone=current_phone)
+    conn.close()
+
+    form = {
+        "avg_split": "",
+        "distance_meters": "",
+        "duration_seconds": "",
+        "workout_key": default_key,
+        "goal_id": "",
+        "workout_date": date.today().isoformat(),
+        "label": "",
+    }
+    if workout:
+        form["avg_split"] = pacing.format_split(float(workout["avg_split_seconds"]))
+        form["distance_meters"] = workout.get("distance_meters") or ""
+        form["duration_seconds"] = workout.get("duration_seconds") or ""
+        form["workout_key"] = workout.get("workout_key") or default_key
+        form["goal_id"] = workout.get("goal_id") or ""
+        wd = workout.get("workout_date")
+        form["workout_date"] = wd.isoformat() if hasattr(wd, "isoformat") else str(wd)[:10]
+        form["label"] = workout.get("label") or ""
+    else:
+        if scan.get("detected_split_seconds") is not None:
+            form["avg_split"] = pacing.format_split(float(scan["detected_split_seconds"]))
+        form["distance_meters"] = scan.get("detected_distance_meters") or ""
+        recv = scan.get("received_at")
+        if recv:
+            form["workout_date"] = recv.strftime("%Y-%m-%d") if hasattr(recv, "strftime") else str(recv)[:10]
+
+    parsed_split = None
+    if form["avg_split"]:
+        try:
+            parsed_split = pacing.parse_split(form["avg_split"])
+        except ValueError:
+            parsed_split = None
+    dur_val = int(form["duration_seconds"]) if str(form["duration_seconds"]).isdigit() else None
+    dist_val = int(form["distance_meters"]) if str(form["distance_meters"]).isdigit() else None
+    effective_dur = (
+        pacing.effective_workout_duration(dur_val, dist_val, parsed_split)
+        if parsed_split is not None
+        else None
+    )
+
+    return render_template(
+        "my_scan_detail.html",
+        scan=scan,
+        workout=workout,
+        goals=goals,
+        form=form,
+        workout_types=workout_types,
+        default_key=default_key,
+        effective_dur=effective_dur,
+        format_split=pacing.format_split,
+        format_minutes=format_minutes,
+        is_steady_workout=pacing.is_steady_state_workout,
+    )
 
 
 # ── Admin — WhatsApp scan queue ──────────────────────────────────────────────
@@ -1514,6 +1831,7 @@ def admin_scan_approve(scan_id):
     goal_id_raw = (request.form.get("goal_id") or "").strip()
     workout_date = request.form.get("workout_date") or date.today().isoformat()
     dist_raw = (request.form.get("distance_meters") or "").strip()
+    dur_raw = (request.form.get("duration_seconds") or "").strip()
     label = (request.form.get("label") or "").strip() or None
 
     if not username:
@@ -1533,6 +1851,7 @@ def admin_scan_approve(scan_id):
         return redirect(url_for("admin_scan_detail", scan_id=scan_id))
 
     distance_meters = int(dist_raw) if dist_raw.isdigit() else None
+    duration_seconds = int(dur_raw) if dur_raw.isdigit() else None
 
     result = ocr_processor.approve_scan(
         scan_id,
@@ -1542,6 +1861,7 @@ def admin_scan_approve(scan_id):
         goal_id,
         workout_date,
         distance_meters=distance_meters,
+        duration_seconds=duration_seconds,
         label=label,
     )
     if result.get("error"):
@@ -1555,11 +1875,18 @@ def admin_scan_approve(scan_id):
         finally:
             streak_conn.close()
 
-    flash(
-        f"Workout logged for {username} — rating {result['rating']} "
-        f"(expected {pacing.format_split(result['expected'])}).",
-        "success",
-    )
+    if result.get("steady"):
+        flash(
+            f"Steady workout logged for {username} — "
+            f"{format_minutes((result.get('duration_seconds') or 0) / 60.0)} toward weekly target.",
+            "success",
+        )
+    else:
+        flash(
+            f"Workout logged for {username} — target split "
+            f"{pacing.format_split(result['expected'])} ({result.get('rating')} vs chart).",
+            "success",
+        )
     return redirect(url_for("admin_scans"))
 
 

@@ -1,0 +1,117 @@
+{% extends "layout_app.html" %}
+{% block title %}Scan #{{ scan.id }} · USD Men's Rowing{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Scan #{{ scan.id }}</h1>
+  <p class="page-sub">
+    Received {{ scan.received_at.strftime('%B %d, %Y at %H:%M') if scan.received_at else '—' }}
+    {% if workout %}
+      · Logged as <a href="{{ url_for('workouts_list') }}">workout #{{ workout.id }}</a>
+    {% elif scan.status == 'pending' %}
+      · <span style="color:#93c5fd">OCR pending — correct values below and log when ready</span>
+    {% endif %}
+  </p>
+</div>
+
+<div class="scan-layout">
+
+  <div>
+    <div class="scan-img-wrap">
+      <img
+        src="{{ url_for('my_scan_image', scan_id=scan.id) }}"
+        alt="Workout scan #{{ scan.id }}"
+        onerror="this.parentElement.innerHTML='<p class=\'scan-img-missing\'>Image file not found on disk</p>'"
+      >
+    </div>
+    {% if scan.ocr_raw_text %}
+    <p class="section-head scan-section-head">What OCR detected</p>
+    <div class="ocr-block">{{ scan.ocr_raw_text }}</div>
+    {% endif %}
+    <a href="{{ url_for('my_scans_list') }}" class="btn-link scan-back-link">← All my scans</a>
+  </div>
+
+  <div class="panel glass scan-edit-panel">
+    <p class="section-head">Workout values</p>
+    <p class="scan-edit-hint">
+      Fix any misread splits or distances. Select a goal and save to log or update your workout record.
+    </p>
+
+    {% if not goals %}
+    <p class="empty-hint" style="margin-bottom:1rem">
+      <a href="{{ url_for('goal_new') }}">Create a goal</a> before logging this scan as a workout.
+    </p>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('my_scan_detail', scan_id=scan.id) }}">
+      <label class="field">
+        <span class="field-label">Goal</span>
+        <select name="goal_id" {% if not goals %}disabled{% endif %}>
+          <option value="">— scan values only —</option>
+          {% for g in goals %}
+          <option value="{{ g.id }}" {% if form.goal_id|string == g.id|string %}selected{% endif %}>
+            {{ g.title or ('Goal ' ~ g.id) }} — {{ format_split(g.target_seconds|float) }} by {{ g.target_date }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <div class="field-row">
+        <label class="field">
+          <span class="field-label">Avg split /500m</span>
+          <input type="text" name="avg_split" required value="{{ form.avg_split }}" placeholder="2:08.5" autocomplete="off">
+        </label>
+        <label class="field">
+          <span class="field-label">Distance (m)</span>
+          <input type="number" name="distance_meters" min="0" value="{{ form.distance_meters }}" placeholder="10000">
+        </label>
+      </div>
+
+      <label class="field">
+        <span class="field-label">Duration (sec)</span>
+        <input type="number" name="duration_seconds" min="0" value="{{ form.duration_seconds }}" placeholder="2700">
+        <p class="field-hint">Over 40 min counts as steady volume only (no split scoring).</p>
+      </label>
+
+      {% if effective_dur and is_steady_workout(effective_dur) %}
+      <p class="scan-steady-note">This piece will log as <strong>{{ format_minutes(effective_dur / 60.0) }}</strong> steady volume.</p>
+      {% elif workout and workout.expected_split_seconds is not none and not is_steady_workout(effective_dur) %}
+      <p class="scan-target-note">
+        Chart target at your goal: <strong>{{ format_split(workout.expected_split_seconds|float) }}</strong>/500m
+        {% if workout.split_delta_seconds is not none %}
+          ({{ '%+.1f'|format(workout.split_delta_seconds|float) }}s)
+        {% endif %}
+      </p>
+      {% endif %}
+
+      <label class="field">
+        <span class="field-label">Workout type</span>
+        <select name="workout_key">
+          {% for key, meta in workout_types.items() %}
+          <option value="{{ key }}" {% if key == form.workout_key %}selected{% endif %}>
+            {{ meta.header }} · Zone {{ meta.zone }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+
+      <div class="field-row">
+        <label class="field">
+          <span class="field-label">Workout date</span>
+          <input type="date" name="workout_date" value="{{ form.workout_date }}" required>
+        </label>
+        <label class="field">
+          <span class="field-label">Label (optional)</span>
+          <input type="text" name="label" value="{{ form.label }}" placeholder="Morning steady">
+        </label>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn-primary">
+          {% if workout %}Save changes{% elif goals %}Save & log workout{% else %}Save scan values{% endif %}
+        </button>
+        <a href="{{ url_for('my_scans_list') }}" class="btn-link">Cancel</a>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
