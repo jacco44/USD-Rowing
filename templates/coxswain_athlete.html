@@ -1,0 +1,185 @@
+{% extends "layout_app.html" %}
+{% block title %}{{ display_name }} · Team workspace{% endblock %}
+{% block content %}
+<div class="page-head">
+  <p class="cox-back-link"><a href="{{ url_for('coxswain_workspace') }}">← Team roster</a></p>
+  <h1 class="page-title">{{ display_name }}</h1>
+  <p class="page-sub">{{ athlete.username }}</p>
+</div>
+
+<section class="stat-grid" aria-label="Athlete summary">
+  <article class="stat-card glass">
+    <span class="stat-label">Workouts this week</span>
+    <span class="stat-value {% if workouts_week >= weekly_target %}cox-on-track{% else %}cox-behind{% endif %}">
+      {{ workouts_week }}/{{ weekly_target }}
+    </span>
+    <span class="stat-hint">{{ week_start.strftime('%b %d') }} – {{ week_end.strftime('%b %d') }}</span>
+  </article>
+  <article class="stat-card glass">
+    <span class="stat-label">Streak</span>
+    <span class="stat-value">{{ athlete.streak_count or 0 }}</span>
+    <span class="stat-hint">days</span>
+  </article>
+  <article class="stat-card glass">
+    <span class="stat-label">Verified workouts</span>
+    <span class="stat-value">{{ verified_count }}</span>
+    <span class="stat-hint">{{ unverified_count }} pending review</span>
+  </article>
+  {% if athlete.two_k_seconds is not none %}
+  <article class="stat-card glass">
+    <span class="stat-label">Current 2k</span>
+    <span class="stat-value" style="font-size:1.5rem">{{ format_split(athlete.two_k_seconds|float) }}</span>
+    {% if athlete.six_k_seconds is not none %}
+    <span class="stat-hint">6k {{ format_split(athlete.six_k_seconds|float) }}</span>
+    {% endif %}
+  </article>
+  {% endif %}
+</section>
+
+{% if primary_goal and goal_plan %}
+<section class="panel glass goal-plan-panel">
+  <div class="panel-head">
+    <div>
+      <h2>{{ primary_goal.title or 'Active goal' }}</h2>
+      <p class="panel-meta">
+        Target {{ format_split(primary_goal.target_seconds|float) }} by {{ primary_goal.target_date }}
+        {% if primary_goal.days_left is not none %}
+          · {% if primary_goal.days_left >= 0 %}{{ primary_goal.days_left }} days left{% else %}{{ -primary_goal.days_left }}d overdue{% endif %}
+        {% endif %}
+      </p>
+    </div>
+  </div>
+
+  {% if goal_plan.gap_2k_seconds is not none %}
+  <p class="goal-plan-gap">
+    {% if goal_plan.gap_2k_seconds > 0 %}
+    <strong>{{ "%.1f"|format(goal_plan.gap_2k_seconds) }}s</strong> off goal 2k.
+    {% if goal_plan.steady_minutes_per_week %}
+    Recommended steady volume: <strong>{{ format_minutes(goal_plan.steady_minutes_per_week) }}/wk</strong>.
+    {% endif %}
+    {% else %}
+    At or ahead of goal pace.
+    {% if goal_plan.steady_minutes_per_week %}
+    Maintain ~{{ format_minutes(goal_plan.steady_minutes_per_week) }}/wk steady.
+    {% endif %}
+    {% endif %}
+  </p>
+  {% endif %}
+
+  <div class="goal-plan-table-wrap">
+    <table class="data-table goal-plan-table">
+      <thead>
+        <tr>
+          <th>Workout</th>
+          <th>Current split</th>
+          <th>Target at goal</th>
+          <th>Gap</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in goal_plan.workout_rows %}
+        <tr>
+          <td>
+            <span class="goal-plan-wk">{{ row.header }}</span>
+            {% if row.zone %}<span class="zone-tag zone-{{ row.zone }}">Z{{ row.zone }}</span>{% endif %}
+          </td>
+          <td class="split-cell">
+            {% if row.current_split is not none %}{{ format_split(row.current_split) }}{% else %}—{% endif %}
+          </td>
+          <td class="split-cell split-target">
+            {% if row.goal_split is not none %}{{ format_split(row.goal_split) }}{% else %}—{% endif %}
+          </td>
+          <td class="delta-{% if row.gap_seconds is not none and row.gap_seconds <= 0 %}pos{% elif row.gap_seconds is not none %}neg{% endif %}">
+            {% if row.gap_seconds is not none %}
+              {% if row.gap_seconds > 0 %}+{% endif %}{{ "%.1f"|format(row.gap_seconds) }}s
+            {% else %}—{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% elif not goals %}
+<section class="panel glass empty-panel">
+  <p class="empty-hint">No goals set yet.</p>
+</section>
+{% endif %}
+
+<div class="page-head" style="margin-top:1.5rem">
+  <h2 class="page-title" style="font-size:1.45rem">Workout log</h2>
+  <p class="page-sub">Verify entries after confirming splits and dates look correct.</p>
+</div>
+
+{% if workouts %}
+<div class="panel glass" style="padding:0;overflow:hidden;">
+  <table class="data-table cox-workout-table" style="margin:0">
+    <thead>
+      <tr>
+        <th style="padding-left:1.1rem">Date</th>
+        <th>Avg /500m</th>
+        <th>Target /500m</th>
+        <th>Result</th>
+        <th>Type</th>
+        <th>Score</th>
+        <th>Status</th>
+        <th style="width:8rem">Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for w in workouts %}
+      {% set dur = effective_workout_duration(w.duration_seconds, w.distance_meters, w.avg_split_seconds|float) %}
+      <tr class="{% if not w.verified_at %}cox-row-unverified{% endif %}">
+        <td style="padding-left:1.1rem;color:var(--text-muted);font-size:0.84rem">{{ w.workout_date }}</td>
+        <td style="font-weight:700;font-variant-numeric:tabular-nums">{{ format_split(w.avg_split_seconds|float) }}</td>
+        <td style="font-variant-numeric:tabular-nums;color:var(--text-muted)">
+          {% if is_steady_workout(dur) %}
+            <span class="steady-vol-pill">Steady volume</span>
+          {% elif w.expected_split_seconds is not none %}{{ format_split(w.expected_split_seconds|float) }}{% else %}—{% endif %}
+        </td>
+        <td class="{% if not is_steady_workout(dur) %}delta-{% if w.split_delta_seconds is not none and w.split_delta_seconds <= 0 %}pos{% else %}neg{% endif %}{% endif %}">
+          {% if is_steady_workout(dur) %}
+            {% if dur %}{{ format_minutes(dur / 60.0) }}{% else %}—{% endif %}
+          {% elif w.split_delta_seconds is not none %}
+            {% if w.split_delta_seconds > 0 %}+{% endif %}{{ "%.1f"|format(w.split_delta_seconds|float) }}s
+          {% else %}—{% endif %}
+        </td>
+        <td style="color:var(--text-muted);font-size:0.84rem">
+          {{ workout_types[w.workout_key].header if w.workout_key in workout_types else (w.label or w.workout_key or '—') }}
+        </td>
+        <td>
+          {% if not is_steady_workout(dur) %}
+          <span class="tier-pill tier-{{ w.pace_score|round|int }}">{{ format_pace_score(w.pace_score) }}</span>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if w.verified_at %}
+          <span class="cox-verified-badge" title="Verified by {{ w.verified_by }}">Verified</span>
+          {% else %}
+          <span class="cox-pending-badge">Pending</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if w.verified_at %}
+          <form method="post" action="{{ url_for('coxswain_unverify_workout', workout_id=w.id) }}" style="margin:0">
+            <input type="hidden" name="next" value="{{ request.path }}">
+            <button type="submit" class="btn-sm btn-muted">Undo</button>
+          </form>
+          {% else %}
+          <form method="post" action="{{ url_for('coxswain_verify_workout', workout_id=w.id) }}" style="margin:0">
+            <input type="hidden" name="next" value="{{ request.path }}">
+            <button type="submit" class="btn-sm btn-primary">Verify</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel glass empty-panel">
+  <p class="empty-hint">No workouts logged yet.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -912,6 +912,31 @@ body.app-shell::before {
   max-width: 30rem;
 }
 
+.profile-role-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+}
+
+.profile-choice,
+.profile-skip {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.92rem;
+  color: rgba(255, 255, 255, 0.88);
+  cursor: pointer;
+}
+
+.profile-skip {
+  margin-top: 0.75rem;
+}
+
+.profile-choice input,
+.profile-skip input {
+  accent-color: var(--accent, #3b82f6);
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -1958,5 +1983,211 @@ body.app-shell::before {
 @media (max-width: 700px) {
   .scan-layout {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ── Coxswain team workspace ─────────────────────────────────────────────── */
+
+.cox-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  margin-bottom: 1.25rem;
+}
+
+.cox-week-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.cox-week-label {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.cox-week-current {
+  display: inline-block;
+  margin-left: 0.35rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: rgba(59, 130, 246, 0.25);
+  color: #93c5fd;
+  vertical-align: middle;
+}
+
+.cox-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.cox-filter-pill {
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--text-muted);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.cox-filter-pill:hover {
+  color: #fff;
+  border-color: rgba(147, 197, 253, 0.35);
+}
+
+.cox-filter-pill.active {
+  color: #fff;
+  border-color: rgba(56, 189, 248, 0.5);
+  background: rgba(56, 189, 248, 0.18);
+}
+
+.cox-roster-table .cox-athlete-name {
+  display: block;
+  font-weight: 700;
+  color: #fff;
+}
+
+.cox-roster-table .cox-athlete-email {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 0.1rem;
+}
+
+.cox-week-count {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.05rem;
+}
+
+.cox-on-track {
+  color: var(--success);
+}
+
+.cox-behind {
+  color: #f97316;
+}
+
+.cox-status-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  vertical-align: middle;
+}
+
+.cox-status-ok {
+  color: var(--success);
+}
+
+.cox-status-warn {
+  padding: 0.12rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(249, 115, 22, 0.18);
+  color: #fdba74;
+}
+
+.cox-row-behind {
+  background: rgba(249, 115, 22, 0.04);
+}
+
+.cox-row-unverified {
+  background: rgba(245, 158, 11, 0.05);
+}
+
+.cox-unverified-pill {
+  display: inline-block;
+  min-width: 1.4rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: center;
+  background: rgba(245, 158, 11, 0.2);
+  color: #fcd34d;
+}
+
+.cox-goal-title {
+  display: block;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cox-footnote {
+  margin-top: 1rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.cox-back-link {
+  margin: 0 0 0.35rem;
+  font-size: 0.84rem;
+}
+
+.cox-back-link a {
+  color: #93c5fd;
+  text-decoration: none;
+}
+
+.cox-back-link a:hover {
+  text-decoration: underline;
+}
+
+.cox-verified-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+}
+
+.cox-pending-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  background: rgba(245, 158, 11, 0.15);
+  color: #fcd34d;
+}
+
+.btn-muted {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: var(--text-muted);
+}
+
+.btn-muted:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+@media (max-width: 900px) {
+  .cox-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .cox-roster-table,
+  .cox-workout-table {
+    font-size: 0.82rem;
   }
 }

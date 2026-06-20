@@ -3,27 +3,72 @@
 {% block content %}
 <div class="page-head">
   <h1 class="page-title">Profile</h1>
-  <p class="page-sub">Your current 2k drives split comparisons and steady-state volume recommendations.</p>
+  <p class="page-sub">Your role and erg test times drive split comparisons and steady-state volume recommendations.</p>
 </div>
 
+{% if is_coxswain %}
+<p class="panel glass" style="padding:1rem 1.25rem;font-size:0.9rem;color:var(--text-muted);margin-bottom:1.25rem;">
+  You're marked as a coxswain, so erg-based training predictions are turned off.
+</p>
+{% elif not predictions_enabled %}
+<p class="panel glass" style="padding:1rem 1.25rem;font-size:0.9rem;color:var(--text-muted);margin-bottom:1.25rem;">
+  Add your current <strong>2k and 6k</strong> below to unlock personalized split and volume recommendations.
+</p>
+{% endif %}
+
 <div class="form-panel glass">
-  <form method="post" action="{{ url_for('profile') }}">
-    <div class="field">
-      <label class="field-label" for="two_k">Current 2k time</label>
-      <input
-        type="text"
-        name="two_k"
-        id="two_k"
-        value="{{ current_two_k }}"
-        placeholder="6:45.0"
-        autocomplete="off"
-        style="width:100%"
-      >
-      <p style="font-size:0.78rem;color:var(--text-muted);margin-top:0.4rem;line-height:1.45;">
-        Your most recent 2k test (e.g. <strong style="color:rgba(255,255,255,0.75)">6:45.0</strong>).
-        Used to calculate target splits and weekly steady volume vs your goal.
-      </p>
+  <form method="post" action="{{ url_for('profile') }}" id="profile-form">
+    <fieldset class="field" style="border:0;padding:0;margin:0">
+      <legend class="field-label" style="margin-bottom:0.5rem">Are you a coxswain?</legend>
+      <div class="profile-role-options">
+        <label class="profile-choice">
+          <input type="radio" name="is_coxswain" value="0" required {% if not is_coxswain %}checked{% endif %}>
+          <span>No — I row</span>
+        </label>
+        <label class="profile-choice">
+          <input type="radio" name="is_coxswain" value="1" required {% if is_coxswain %}checked{% endif %}>
+          <span>Yes — I'm a coxswain</span>
+        </label>
+      </div>
+    </fieldset>
+
+    <div id="profile-erg-block" style="margin-top:1.25rem">
+      <div class="field">
+        <label class="field-label" for="two_k">Current 2k time</label>
+        <input
+          type="text"
+          name="two_k"
+          id="two_k"
+          value="{{ current_two_k }}"
+          placeholder="6:45.0"
+          autocomplete="off"
+          style="width:100%"
+        >
+      </div>
+      <div class="field" style="margin-top:1rem">
+        <label class="field-label" for="six_k">Current 6k time</label>
+        <input
+          type="text"
+          name="six_k"
+          id="six_k"
+          value="{{ current_six_k }}"
+          placeholder="21:30.0"
+          autocomplete="off"
+          style="width:100%"
+        >
+        <p style="font-size:0.78rem;color:var(--text-muted);margin-top:0.4rem;line-height:1.45;">
+          Enter your most recent 2k and 6k tests (e.g. <strong style="color:rgba(255,255,255,0.75)">6:45.0</strong>
+          and <strong style="color:rgba(255,255,255,0.75)">21:30.0</strong>).
+          Both are required for target splits and weekly steady volume vs your goal.
+        </p>
+      </div>
+      <label class="profile-skip">
+        <input type="checkbox" name="no_erg_times" value="1" id="profile_no_erg_times"
+          {% if not current_two_k and not current_six_k and not is_coxswain %}checked{% endif %}>
+        <span>I don't have 2k/6k test times yet</span>
+      </label>
     </div>
+
     <div class="field" style="margin-top:1.25rem">
       <label class="field-label" for="whatsapp_phone">WhatsApp phone number</label>
       <input
@@ -47,4 +92,30 @@
     </div>
   </form>
 </div>
+
+<script>
+  (function () {
+    var coxRadios = document.querySelectorAll('#profile-form input[name="is_coxswain"]');
+    var noErg = document.getElementById('profile_no_erg_times');
+    var block = document.getElementById('profile-erg-block');
+    var twoK = document.getElementById('two_k');
+    var sixK = document.getElementById('six_k');
+
+    function syncErgFields() {
+      var isCox = document.querySelector('#profile-form input[name="is_coxswain"]:checked');
+      var hide = (isCox && isCox.value === '1') || (noErg && noErg.checked);
+      if (block) block.style.display = hide ? 'none' : 'block';
+      if (twoK) twoK.disabled = hide;
+      if (sixK) sixK.disabled = hide;
+      if (hide) {
+        if (twoK) twoK.value = '';
+        if (sixK) sixK.value = '';
+      }
+    }
+
+    coxRadios.forEach(function (el) { el.addEventListener('change', syncErgFields); });
+    if (noErg) noErg.addEventListener('change', syncErgFields);
+    syncErgFields();
+  })();
+</script>
 {% endblock %}

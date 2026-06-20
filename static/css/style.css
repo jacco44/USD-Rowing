@@ -232,6 +232,48 @@ button:hover {
   margin: 10px 0 12px;
 }
 
+.register-hr-intro {
+  margin-top: 16px;
+}
+
+.register-role {
+  border: 0;
+  padding: 0;
+  margin: 0 0 14px;
+}
+
+.register-sublegend {
+  font-size: 0.82rem;
+  color: rgba(255, 255, 255, 0.9);
+  margin-bottom: 8px;
+  padding: 0;
+}
+
+.register-role-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+
+.register-choice,
+.register-skip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  color: rgba(255, 255, 255, 0.92);
+  cursor: pointer;
+}
+
+.register-skip {
+  margin: 8px 0 4px;
+}
+
+.register-choice input,
+.register-skip input {
+  accent-color: #3b82f6;
+}
+
 .hr-zones-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);

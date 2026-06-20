@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+import math
 
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_CHART_PATH = BASE_DIR / "data" / "pacing_chart.json"
@@ -199,6 +200,40 @@ def parse_goal_2k(value: str) -> float:
     return parse_split(value)
 
 
+def parse_erg_test_time(value: str) -> float:
+    """Parse an erg test time (2k, 6k, etc.) into total seconds."""
+    return parse_split(value)
+
+
+ERG_TEST_RANGES: dict[str, tuple[int, int, str]] = {
+    "2k": (300, 1500, "5:00 and 25:00"),
+    "6k": (900, 5400, "15:00 and 90:00"),
+}
+
+
+def validate_erg_test_seconds(seconds: int, kind: str) -> str | None:
+    """Return an error message when seconds are out of range for the test type."""
+    bounds = ERG_TEST_RANGES.get(kind)
+    if bounds is None:
+        return None
+    lo, hi, hint = bounds
+    if seconds < lo or seconds > hi:
+        return f"{kind.upper()} time looks unrealistic; use mm:ss between about {hint}."
+    return None
+
+
+def profile_supports_predictions(profile: dict[str, Any] | None) -> bool:
+    """True when profile data is enough for personalized split and volume predictions."""
+    if not profile:
+        return False
+    if profile.get("is_coxswain"):
+        return False
+    return (
+        profile.get("two_k_seconds") is not None
+        and profile.get("six_k_seconds") is not None
+    )
+
+
 def _workout_columns(chart: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """Workout keys in chart column order, excluding total 2k time (shown as sticky row label)."""
     types = chart.get("workout_types") or {}
@@ -352,11 +387,30 @@ def recommend_steady_minutes_per_week(
     """
     Suggested weekly steady-state (zone 2) minutes from the gap between current and goal 2k.
     """
+    BASE_MINUTES = 240.0          # 4 hr/week floor - aerobic base maintenance
+    MAX_EXTRA_MINUTES = 360.0     # up to +6 hr/week for the largest realistic gaps
+    GAP_CAP_SECONDS = 30.0        # gaps beyond this are a multi-season project,
+                                  # not something one training block's volume fixes
+    REFERENCE_DAYS = 56.0         # 8-week block the curve above is calibrated to
+    MIN_TIMEFRAME_FACTOR = 0.75
+    MAX_TIMEFRAME_FACTOR = 1.5
+
     gap = max(0.0, float(current_2k_seconds) - float(goal_2k_seconds))
-    minutes = 90.0 + min(120.0, gap * 6.0)
-    if days_left is not None and 0 < days_left <= 45:
-        minutes *= 1.0 + (45 - days_left) / 90.0
-    return int(round(minutes / 15.0) * 15.0)
+    gap = min(gap, GAP_CAP_SECONDS)
+
+    extra = MAX_EXTRA_MINUTES * math.sqrt(gap / GAP_CAP_SECONDS) if gap > 0 else 0.0
+
+    if days_left is not None and days_left > 0:
+        timeframe_factor = math.sqrt(REFERENCE_DAYS / float(days_left))
+        timeframe_factor = max(MIN_TIMEFRAME_FACTOR, min(MAX_TIMEFRAME_FACTOR, timeframe_factor))
+        extra *= timeframe_factor
+
+    minutes = BASE_MINUTES + extra
+    minutes = max(BASE_MINUTES, min(minutes, BASE_MINUTES + MAX_EXTRA_MINUTES))
+
+    # Round to nearest 15 min, but never let rounding push it under the floor.
+    rounded = int(round(minutes / 15.0) * 15.0)
+    return max(int(BASE_MINUTES), rounded)
 
 
 def build_goal_plan(

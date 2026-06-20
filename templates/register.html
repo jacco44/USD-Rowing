@@ -39,11 +39,47 @@
 
       <fieldset class="register-profile">
         <legend class="register-legend">Training profile</legend>
-        <div class="input-field">
-          <input type="text" name="two_k" id="two_k" autocomplete="off" placeholder=" " value="{{ reg_form.two_k }}">
-          <label for="two_k">Current 2k (optional, e.g. 6:45)</label>
+
+        <fieldset class="register-role" aria-label="Coxswain status">
+          <legend class="register-sublegend">Are you a coxswain?</legend>
+          <div class="register-role-options">
+            <label class="register-choice">
+              <input type="radio" name="is_coxswain" value="0" required
+                {% if reg_form.is_coxswain == '0' %}checked{% elif not reg_form.is_coxswain %}checked{% endif %}>
+              <span>No — I row</span>
+            </label>
+            <label class="register-choice">
+              <input type="radio" name="is_coxswain" value="1" required
+                {% if reg_form.is_coxswain == '1' %}checked{% endif %}>
+              <span>Yes — I'm a coxswain</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <div id="erg-times-block">
+          <div class="input-field">
+            <input type="text" name="two_k" id="two_k" autocomplete="off" placeholder=" "
+              value="{{ reg_form.two_k }}">
+            <label for="two_k">Current 2k (e.g. 6:45)</label>
+          </div>
+          <div class="input-field">
+            <input type="text" name="six_k" id="six_k" autocomplete="off" placeholder=" "
+              value="{{ reg_form.six_k }}">
+            <label for="six_k">Current 6k (e.g. 21:30)</label>
+          </div>
+          <label class="register-skip">
+            <input type="checkbox" name="no_erg_times" value="1" id="no_erg_times"
+              {% if reg_form.no_erg_times %}checked{% endif %}>
+            <span>I don't have 2k/6k test times yet</span>
+          </label>
+          <p class="register-hint">
+            Split comparisons and weekly volume recommendations need both erg tests.
+            Coxswains and rowers without test times can still log workouts and set goals,
+            but personalized training predictions stay off until you add them in your profile.
+          </p>
         </div>
-        <p class="register-hint">
+
+        <p class="register-hint register-hr-intro">
           Heart rate zones below use the <strong>upper bpm limit</strong> of each zone (common %max-HR bands).
           Suggested values assume max HR near <strong>190</strong>; change them to match your watch or test data.
         </p>
@@ -85,5 +121,30 @@
       </div>
     </form>
   </div>
+  <script>
+    (function () {
+      var coxRadios = document.querySelectorAll('input[name="is_coxswain"]');
+      var noErg = document.getElementById('no_erg_times');
+      var block = document.getElementById('erg-times-block');
+      var twoK = document.getElementById('two_k');
+      var sixK = document.getElementById('six_k');
+
+      function syncErgFields() {
+        var isCox = document.querySelector('input[name="is_coxswain"]:checked');
+        var hide = (isCox && isCox.value === '1') || (noErg && noErg.checked);
+        if (block) block.style.display = hide ? 'none' : 'block';
+        if (twoK) twoK.disabled = hide;
+        if (sixK) sixK.disabled = hide;
+        if (hide) {
+          if (twoK) twoK.value = '';
+          if (sixK) sixK.value = '';
+        }
+      }
+
+      coxRadios.forEach(function (el) { el.addEventListener('change', syncErgFields); });
+      if (noErg) noErg.addEventListener('change', syncErgFields);
+      syncErgFields();
+    })();
+  </script>
 </body>
 </html>

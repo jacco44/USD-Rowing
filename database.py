@@ -6,7 +6,6 @@ import mysql.connector
 import os
 
 BASE_DIR = Path(__file__).resolve().parent
-doSQL_password_file = BASE_DIR / ".passwords" / "DigitalOceanSQL.txt"
 
 DOSQL_USER = os.environ.get("DOSQL_USER")
 DOSQL_PASSWORD = os.environ.get("DOSQL_PASSWORD")

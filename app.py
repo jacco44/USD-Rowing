@@ -62,13 +62,24 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY", "dev-secret-change-me")
 app.jinja_env.globals["format_split"] = pacing.format_split
 app.jinja_env.globals["format_minutes"] = format_minutes
+app.jinja_env.globals["format_pace_score"] = pacing.format_pace_score
 app.jinja_env.globals["is_steady_workout"] = pacing.is_steady_state_workout
 app.jinja_env.globals["effective_workout_duration"] = pacing.effective_workout_duration
+
+COXSWAIN_WEEKLY_TARGET = 5
 
 
 @app.context_processor
 def inject_admin_flag():
     return {"is_admin": is_admin()}
+
+
+@app.context_processor
+def inject_coxswain_access():
+    return {
+        "has_coxswain_access": has_coxswain_access(),
+        "coxswain_weekly_target": COXSWAIN_WEEKLY_TARGET,
+    }
 
 
 _AUTO_OCR_INTERVAL_SECONDS = max(15, int(os.environ.get("AUTO_OCR_INTERVAL_SECONDS", "45")))
@@ -125,6 +136,8 @@ def _ensure_user_profile_columns(conn) -> None:
     """Add optional athlete profile columns to rowing_users if missing."""
     alters = (
         "ALTER TABLE rowing_users ADD COLUMN two_k_seconds INT NULL",
+        "ALTER TABLE rowing_users ADD COLUMN six_k_seconds INT NULL",
+        "ALTER TABLE rowing_users ADD COLUMN is_coxswain TINYINT(1) NOT NULL DEFAULT 0",
         "ALTER TABLE rowing_users ADD COLUMN hr_zone1_max SMALLINT UNSIGNED NULL",
         "ALTER TABLE rowing_users ADD COLUMN hr_zone2_max SMALLINT UNSIGNED NULL",
         "ALTER TABLE rowing_users ADD COLUMN hr_zone3_max SMALLINT UNSIGNED NULL",
@@ -153,14 +166,40 @@ def _registration_form_values() -> dict[str, str]:
             return (request.form.get(key) or "").strip()
         return str(z[i - 1])
 
+    if request.method == "POST":
+        is_coxswain = (request.form.get("is_coxswain") or "").strip()
+        no_erg_times = request.form.get("no_erg_times") == "1"
+    else:
+        is_coxswain = ""
+        no_erg_times = False
+
     return {
         "two_k": (request.form.get("two_k", "") or "").strip() if request.method == "POST" else "",
+        "six_k": (request.form.get("six_k", "") or "").strip() if request.method == "POST" else "",
+        "is_coxswain": is_coxswain,
+        "no_erg_times": no_erg_times,
         "hr_zone1_max": zone_field(1),
         "hr_zone2_max": zone_field(2),
         "hr_zone3_max": zone_field(3),
         "hr_zone4_max": zone_field(4),
         "hr_zone5_max": zone_field(5),
     }
+
+
+def _parse_optional_erg_time(raw: str, kind: str) -> tuple[int | None, str | None]:
+    """Parse an optional erg test time; return (seconds, user-facing error)."""
+    text = (raw or "").strip()
+    if not text:
+        return None, None
+    try:
+        seconds = int(round(pacing.parse_erg_test_time(text)))
+    except ValueError:
+        example = "6:45.0" if kind == "2k" else "21:30.0"
+        return None, f"Enter a valid current {kind} time (for example {example})."
+    err = pacing.validate_erg_test_seconds(seconds, kind)
+    if err:
+        return None, err
+    return seconds, None
 
 
 def login_required(view):
@@ -199,6 +238,94 @@ def admin_required(view):
         return view(*args, **kwargs)
 
     return wrapped
+
+
+_workout_verification_columns_ready = False
+
+
+def _ensure_workout_verification_columns(conn) -> None:
+    """Add coxswain verification columns to erg_workouts if missing."""
+    global _workout_verification_columns_ready
+    if _workout_verification_columns_ready:
+        return
+    alters = (
+        "ALTER TABLE erg_workouts ADD COLUMN verified_at DATETIME NULL",
+        "ALTER TABLE erg_workouts ADD COLUMN verified_by VARCHAR(255) NULL",
+    )
+    for stmt in alters:
+        try:
+            cur = conn.cursor()
+            cur.execute(stmt)
+            conn.commit()
+            cur.close()
+        except mysql.connector.Error as err:
+            if getattr(err, "errno", None) != 1060:
+                raise
+            conn.rollback()
+    _workout_verification_columns_ready = True
+
+
+def _current_user_is_coxswain() -> bool:
+    user = session.get("user")
+    if not user:
+        return False
+    conn = get_db_connection()
+    if conn is None:
+        return False
+    try:
+        _ensure_user_profile_columns(conn)
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT is_coxswain FROM rowing_users WHERE username = %s",
+            (user,),
+        )
+        row = cur.fetchone()
+        cur.close()
+        return bool(row and row.get("is_coxswain"))
+    except mysql.connector.Error:
+        return False
+    finally:
+        conn.close()
+
+
+def has_coxswain_access() -> bool:
+    """Coxswain accounts and admins can open the team workspace."""
+    if not session.get("user"):
+        return False
+    return is_admin() or _current_user_is_coxswain()
+
+
+def coxswain_required(view):
+    @wraps(view)
+    def wrapped(*args, **kwargs):
+        if not session.get("user"):
+            return redirect(url_for("login"))
+        if not has_coxswain_access():
+            flash("Coxswain workspace access required.", "error")
+            return redirect(url_for("dashboard"))
+        return view(*args, **kwargs)
+
+    return wrapped
+
+
+def _week_bounds_mon_sun(ref: date) -> tuple[date, date]:
+    """Monday–Sunday bounds for the week containing ref."""
+    start = ref - timedelta(days=ref.weekday())
+    return start, start + timedelta(days=6)
+
+
+def _parse_week_param(raw: str | None, today: date) -> tuple[date, date]:
+    if raw:
+        try:
+            ref = date.fromisoformat(raw[:10])
+            return _week_bounds_mon_sun(ref)
+        except ValueError:
+            pass
+    return _week_bounds_mon_sun(today)
+
+
+def _display_name(username: str) -> str:
+    return username.split("@")[0] if "@" in username else username
 
 
 def _ensure_whatsapp_phone_column(conn) -> None:
@@ -411,17 +538,40 @@ def register():
             ), 400
 
         two_k_raw = (request.form.get("two_k") or "").strip()
+        six_k_raw = (request.form.get("six_k") or "").strip()
+        is_coxswain_raw = (request.form.get("is_coxswain") or "").strip()
+        no_erg_times = request.form.get("no_erg_times") == "1"
+
+        if is_coxswain_raw not in ("0", "1"):
+            flash("Please indicate whether you are a coxswain.", "error")
+            return render_template(
+                "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+            ), 400
+        is_coxswain = is_coxswain_raw == "1"
+
         two_k_seconds = None
-        if two_k_raw:
-            try:
-                two_k_seconds = int(round(pacing.parse_goal_2k(two_k_raw)))
-            except ValueError:
-                flash("Enter a valid current 2k time (for example 6:45.0), or leave it blank.", "error")
+        six_k_seconds = None
+        if is_coxswain or no_erg_times:
+            if two_k_raw or six_k_raw:
+                flash("Leave 2k and 6k blank when you are a coxswain or don't have test times yet.", "error")
                 return render_template(
                     "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
                 ), 400
-            if two_k_seconds < 300 or two_k_seconds > 1500:
-                flash("2k time looks unrealistic; use mm:ss between about 5:00 and 25:00.", "error")
+        else:
+            if not two_k_raw or not six_k_raw:
+                flash("Enter your current 2k and 6k times, or check that you don't have them yet.", "error")
+                return render_template(
+                    "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+                ), 400
+            two_k_seconds, err = _parse_optional_erg_time(two_k_raw, "2k")
+            if err:
+                flash(err, "error")
+                return render_template(
+                    "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
+                ), 400
+            six_k_seconds, err = _parse_optional_erg_time(six_k_raw, "6k")
+            if err:
+                flash(err, "error")
                 return render_template(
                     "register.html", reg_form=_registration_form_values(), **REGISTER_TEMPLATE_CTX
                 ), 400
@@ -481,14 +631,17 @@ def register():
 
             _ensure_whatsapp_phone_column(conn)
             insert_profile = (
-                "INSERT INTO rowing_users (username, password, two_k_seconds, "
-                "hr_zone1_max, hr_zone2_max, hr_zone3_max, hr_zone4_max, hr_zone5_max, whatsapp_phone) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+                "INSERT INTO rowing_users (username, password, two_k_seconds, six_k_seconds, "
+                "is_coxswain, hr_zone1_max, hr_zone2_max, hr_zone3_max, hr_zone4_max, "
+                "hr_zone5_max, whatsapp_phone) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
             )
             insert_params = (
                 email_norm,
                 generate_password_hash(password),
                 two_k_seconds,
+                six_k_seconds,
+                1 if is_coxswain else 0,
                 zone_vals[0],
                 zone_vals[1],
                 zone_vals[2],
@@ -536,6 +689,8 @@ def dashboard():
     primary_goal = None
     goal_plan = None
     current_2k_source = None
+    predictions_enabled = False
+    is_coxswain = False
     conn = get_db_connection()
     if conn is None:
         flash("Unable to reach the database.", "error")
@@ -544,13 +699,15 @@ def dashboard():
             _ensure_user_profile_columns(conn)
             cur = conn.cursor(dictionary=True)
             cur.execute(
-                "SELECT two_k_seconds FROM rowing_users WHERE username = %s",
+                "SELECT two_k_seconds, six_k_seconds, is_coxswain FROM rowing_users WHERE username = %s",
                 (user,),
             )
             profile_row = cur.fetchone()
+            predictions_enabled = pacing.profile_supports_predictions(profile_row)
+            is_coxswain = bool(profile_row and profile_row.get("is_coxswain"))
             profile_two_k = (
                 float(profile_row["two_k_seconds"])
-                if profile_row and profile_row.get("two_k_seconds") is not None
+                if predictions_enabled and profile_row.get("two_k_seconds") is not None
                 else None
             )
 
@@ -609,14 +766,12 @@ def dashboard():
             recent_workouts = cur.fetchall()
             cur.close()
 
-            current_2k, current_2k_source = pacing.pick_current_2k_seconds(
-                chart, profile_two_k, recent_workouts
-            )
-            if primary_goal and primary_goal.get("target_seconds") is not None:
+            if primary_goal and predictions_enabled and primary_goal.get("target_seconds") is not None:
+                current_2k_source = "profile"
                 goal_plan = pacing.build_goal_plan(
                     chart,
                     float(primary_goal["target_seconds"]),
-                    current_2k,
+                    profile_two_k,
                     primary_goal.get("days_left"),
                 )
         except mysql.connector.Error as err:
@@ -636,6 +791,8 @@ def dashboard():
         primary_goal=primary_goal,
         goal_plan=goal_plan,
         current_2k_source=current_2k_source,
+        predictions_enabled=predictions_enabled,
+        is_coxswain=is_coxswain,
         celebrate=celebrate,
         format_split=pacing.format_split,
     )
@@ -682,51 +839,47 @@ def goals_list():
         if g.get("target_seconds") is not None and not g.get("is_completed")
     ]
     goal_plans: dict[int, dict] = {}
+    predictions_enabled = False
+    is_coxswain = False
     profile_two_k = None
-    recent_for_estimate: list = []
     conn2 = get_db_connection()
     if conn2:
         try:
             _ensure_user_profile_columns(conn2)
             cur = conn2.cursor(dictionary=True)
             cur.execute(
-                "SELECT two_k_seconds FROM rowing_users WHERE username = %s",
+                "SELECT two_k_seconds, six_k_seconds, is_coxswain FROM rowing_users WHERE username = %s",
                 (user,),
             )
             prow = cur.fetchone()
-            if prow and prow.get("two_k_seconds") is not None:
+            predictions_enabled = pacing.profile_supports_predictions(prow)
+            is_coxswain = bool(prow and prow.get("is_coxswain"))
+            if predictions_enabled and prow.get("two_k_seconds") is not None:
                 profile_two_k = float(prow["two_k_seconds"])
-            cur.execute(
-                """
-                SELECT workout_key, avg_split_seconds, duration_seconds, distance_meters
-                FROM erg_workouts WHERE username = %s
-                ORDER BY workout_date DESC, id DESC LIMIT 12
-                """,
-                (user,),
-            )
-            recent_for_estimate = cur.fetchall()
             cur.close()
         except mysql.connector.Error:
             pass
         finally:
             conn2.close()
 
-    current_2k, _ = pacing.pick_current_2k_seconds(chart, profile_two_k, recent_for_estimate)
     today = date_class.today()
-    for g in rows:
-        if g.get("is_completed") or g.get("target_seconds") is None:
-            continue
-        td = g.get("target_date")
-        days_left = (td - today).days if td else None
-        goal_plans[g["id"]] = pacing.build_goal_plan(
-            chart, float(g["target_seconds"]), current_2k, days_left
-        )
+    if predictions_enabled and profile_two_k is not None:
+        for g in rows:
+            if g.get("is_completed") or g.get("target_seconds") is None:
+                continue
+            td = g.get("target_date")
+            days_left = (td - today).days if td else None
+            goal_plans[g["id"]] = pacing.build_goal_plan(
+                chart, float(g["target_seconds"]), profile_two_k, days_left
+            )
 
     return render_template(
         "goals.html",
         goals=rows,
         goal_plans=goal_plans,
-        current_2k_source="profile" if profile_two_k else ("workout" if current_2k else None),
+        current_2k_source="profile" if predictions_enabled else None,
+        predictions_enabled=predictions_enabled,
+        is_coxswain=is_coxswain,
         format_split=pacing.format_split,
         today=today,
         pacing_chart=pacing_chart,
@@ -1185,24 +1338,50 @@ def profile():
     user = session["user"]
     current_phone = ""
     current_two_k = ""
+    current_six_k = ""
+    is_coxswain = False
+    predictions_enabled = False
     conn = get_db_connection()
     if conn is None:
         flash("Database unavailable.", "error")
-        return render_template("profile.html", current_phone=current_phone, current_two_k=current_two_k)
+        return render_template(
+            "profile.html",
+            current_phone=current_phone,
+            current_two_k=current_two_k,
+            current_six_k=current_six_k,
+            is_coxswain=is_coxswain,
+            predictions_enabled=predictions_enabled,
+        )
 
     if request.method == "POST":
         phone_raw = (request.form.get("whatsapp_phone") or "").strip()
         phone_norm = re.sub(r"\D", "", phone_raw) or None
-        two_k_raw = (request.form.get("two_k") or "").strip()
+        is_coxswain_raw = (request.form.get("is_coxswain") or "").strip()
+        if is_coxswain_raw not in ("0", "1"):
+            flash("Please indicate whether you are a coxswain.", "error")
+            return redirect(url_for("profile"))
+        is_coxswain = is_coxswain_raw == "1"
+        no_erg_times = request.form.get("no_erg_times") == "1"
+
         two_k_seconds = None
-        if two_k_raw:
-            try:
-                two_k_seconds = int(round(pacing.parse_goal_2k(two_k_raw)))
-            except ValueError:
-                flash("Enter a valid current 2k time (e.g. 6:45.0).", "error")
+        six_k_seconds = None
+        if is_coxswain or no_erg_times:
+            if (request.form.get("two_k") or "").strip() or (request.form.get("six_k") or "").strip():
+                flash("Leave 2k and 6k blank when you are a coxswain or don't have test times yet.", "error")
                 return redirect(url_for("profile"))
-            if two_k_seconds < 300 or two_k_seconds > 1500:
-                flash("2k time should be between 5:00 and 25:00.", "error")
+        else:
+            two_k_raw = (request.form.get("two_k") or "").strip()
+            six_k_raw = (request.form.get("six_k") or "").strip()
+            if not two_k_raw or not six_k_raw:
+                flash("Enter both your current 2k and 6k times, or check that you don't have them yet.", "error")
+                return redirect(url_for("profile"))
+            two_k_seconds, err = _parse_optional_erg_time(two_k_raw, "2k")
+            if err:
+                flash(err, "error")
+                return redirect(url_for("profile"))
+            six_k_seconds, err = _parse_optional_erg_time(six_k_raw, "6k")
+            if err:
+                flash(err, "error")
                 return redirect(url_for("profile"))
         try:
             _ensure_whatsapp_phone_column(conn)
@@ -1211,10 +1390,10 @@ def profile():
             cur.execute(
                 """
                 UPDATE rowing_users
-                SET whatsapp_phone = %s, two_k_seconds = %s
+                SET whatsapp_phone = %s, two_k_seconds = %s, six_k_seconds = %s, is_coxswain = %s
                 WHERE username = %s
                 """,
-                (phone_norm, two_k_seconds, user),
+                (phone_norm, two_k_seconds, six_k_seconds, 1 if is_coxswain else 0, user),
             )
             conn.commit()
             cur.close()
@@ -1232,7 +1411,7 @@ def profile():
         _ensure_user_profile_columns(conn)
         cur = conn.cursor(dictionary=True)
         cur.execute(
-            "SELECT whatsapp_phone, two_k_seconds FROM rowing_users WHERE username = %s",
+            "SELECT whatsapp_phone, two_k_seconds, six_k_seconds, is_coxswain FROM rowing_users WHERE username = %s",
             (user,),
         )
         row = cur.fetchone()
@@ -1241,6 +1420,10 @@ def profile():
                 current_phone = row["whatsapp_phone"]
             if row.get("two_k_seconds") is not None:
                 current_two_k = pacing.format_split(float(row["two_k_seconds"]))
+            if row.get("six_k_seconds") is not None:
+                current_six_k = pacing.format_split(float(row["six_k_seconds"]))
+            is_coxswain = bool(row.get("is_coxswain"))
+            predictions_enabled = pacing.profile_supports_predictions(row)
         cur.close()
     except mysql.connector.Error as err:
         print(f"Profile load error: {err}")
@@ -1248,7 +1431,12 @@ def profile():
         conn.close()
 
     return render_template(
-        "profile.html", current_phone=current_phone, current_two_k=current_two_k
+        "profile.html",
+        current_phone=current_phone,
+        current_two_k=current_two_k,
+        current_six_k=current_six_k,
+        is_coxswain=is_coxswain,
+        predictions_enabled=predictions_enabled,
     )
 
 
@@ -1657,6 +1845,389 @@ def my_scan_detail(scan_id):
         format_minutes=format_minutes,
         is_steady_workout=pacing.is_steady_state_workout,
     )
+
+
+# ── Coxswain team workspace ───────────────────────────────────────────────────
+
+
+def _fetch_team_athletes(conn, week_start: date, week_end: date) -> list[dict]:
+    """All rowers with weekly workout counts, verification backlog, and progress hints."""
+    _ensure_user_profile_columns(conn)
+    _ensure_workout_verification_columns(conn)
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        """
+        SELECT u.username, u.two_k_seconds, u.six_k_seconds, u.streak_count,
+               g.id AS goal_id, g.title AS goal_title, g.target_seconds,
+               g.target_date, g.is_completed AS goal_completed
+        FROM rowing_users u
+        LEFT JOIN erg_goals g ON g.id = (
+            SELECT g2.id FROM erg_goals g2
+            WHERE g2.username = u.username AND g2.is_completed = 0
+            ORDER BY g2.target_date ASC
+            LIMIT 1
+        )
+        WHERE u.is_coxswain = 0
+        ORDER BY u.username
+        """
+    )
+    athletes = cur.fetchall()
+    today = date.today()
+    thirty_ago = today - timedelta(days=30)
+
+    for athlete in athletes:
+        uname = athlete["username"]
+        athlete["display_name"] = _display_name(uname)
+
+        cur.execute(
+            """
+            SELECT COUNT(*) AS c FROM erg_workouts
+            WHERE username = %s AND workout_date >= %s AND workout_date <= %s
+            """,
+            (uname, week_start, week_end),
+        )
+        athlete["workouts_week"] = int(cur.fetchone()["c"])
+        athlete["meets_weekly_target"] = athlete["workouts_week"] >= COXSWAIN_WEEKLY_TARGET
+
+        cur.execute(
+            """
+            SELECT COUNT(*) AS c FROM erg_workouts
+            WHERE username = %s AND verified_at IS NULL
+              AND workout_date >= %s
+            """,
+            (uname, thirty_ago),
+        )
+        athlete["unverified_count"] = int(cur.fetchone()["c"])
+
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(duration_seconds), 0) / 60.0 AS steady_min
+            FROM erg_workouts
+            WHERE username = %s
+              AND workout_date >= %s AND workout_date <= %s
+              AND duration_seconds > %s
+            """,
+            (uname, week_start, week_end, pacing.STEADY_STATE_MIN_DURATION_SECONDS),
+        )
+        steady_row = cur.fetchone()
+        athlete["steady_minutes_week"] = int(round(float(steady_row["steady_min"] or 0)))
+
+        cur.execute(
+            """
+            SELECT split_delta_seconds, pace_rating
+            FROM erg_workouts
+            WHERE username = %s AND workout_date >= %s
+              AND (pace_rating IS NOT NULL OR split_delta_seconds IS NOT NULL)
+            """,
+            (uname, thirty_ago),
+        )
+        scores = []
+        for wr in cur.fetchall():
+            scores.append(
+                pacing.workout_pace_score(
+                    wr.get("split_delta_seconds"), wr.get("pace_rating")
+                )
+            )
+        athlete["avg_pace_score_30d"] = (
+            round(sum(scores) / len(scores), 2) if scores else None
+        )
+
+        cur.execute(
+            """
+            SELECT workout_date FROM erg_workouts
+            WHERE username = %s ORDER BY workout_date DESC, id DESC LIMIT 1
+            """,
+            (uname,),
+        )
+        last_row = cur.fetchone()
+        athlete["last_workout_date"] = last_row["workout_date"] if last_row else None
+
+        td = athlete.get("target_date")
+        athlete["goal_days_left"] = (td - today).days if td else None
+
+        if (
+            athlete.get("target_seconds") is not None
+            and athlete.get("two_k_seconds") is not None
+            and not athlete.get("goal_completed")
+        ):
+            athlete["gap_2k_seconds"] = float(athlete["two_k_seconds"]) - float(
+                athlete["target_seconds"]
+            )
+        else:
+            athlete["gap_2k_seconds"] = None
+
+    cur.close()
+    athletes.sort(
+        key=lambda a: (
+            not a["meets_weekly_target"],
+            -(a["workouts_week"] or 0),
+            a["display_name"].lower(),
+        )
+    )
+    return athletes
+
+
+def _fetch_athlete_workouts(conn, username: str, limit: int = 80) -> list[dict]:
+    _ensure_workout_verification_columns(conn)
+    cur = conn.cursor(dictionary=True)
+    cur.execute(
+        """
+        SELECT w.id, w.workout_date, w.label, w.avg_split_seconds, w.pace_rating,
+               w.expected_split_seconds, w.split_delta_seconds, w.workout_key,
+               w.duration_seconds, w.distance_meters, w.verified_at, w.verified_by,
+               g.title AS goal_title
+        FROM erg_workouts w
+        LEFT JOIN erg_goals g ON w.goal_id = g.id
+        WHERE w.username = %s
+        ORDER BY w.workout_date DESC, w.id DESC
+        LIMIT %s
+        """,
+        (username, limit),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    for row in rows:
+        row["pace_score"] = pacing.workout_pace_score(
+            row.get("split_delta_seconds"), row.get("pace_rating")
+        )
+    return rows
+
+
+@coxswain_required
+@app.route("/coxswain")
+def coxswain_workspace():
+    today = date.today()
+    week_start, week_end = _parse_week_param(request.args.get("week"), today)
+    prev_week = week_start - timedelta(days=7)
+    next_week = week_start + timedelta(days=7)
+    filter_status = request.args.get("filter", "all")
+
+    athletes: list[dict] = []
+    conn = get_db_connection()
+    if conn:
+        try:
+            athletes = _fetch_team_athletes(conn, week_start, week_end)
+        except mysql.connector.Error as err:
+            if getattr(err, "errno", None) != 1146:
+                raise
+            flash(TRACKER_TABLES_MSG, "error")
+        finally:
+            conn.close()
+
+    on_track = sum(1 for a in athletes if a["meets_weekly_target"])
+    total_rowers = len(athletes)
+    unverified_total = sum(a["unverified_count"] for a in athletes)
+
+    if filter_status == "on_track":
+        athletes = [a for a in athletes if a["meets_weekly_target"]]
+    elif filter_status == "behind":
+        athletes = [a for a in athletes if not a["meets_weekly_target"]]
+    elif filter_status == "unverified":
+        athletes = [a for a in athletes if a["unverified_count"] > 0]
+
+    behind_count = total_rowers - on_track
+
+    return render_template(
+        "coxswain_workspace.html",
+        athletes=athletes,
+        week_start=week_start,
+        week_end=week_end,
+        prev_week_iso=prev_week.isoformat(),
+        next_week_iso=next_week.isoformat(),
+        filter_status=filter_status,
+        on_track=on_track,
+        behind_count=behind_count,
+        total_rowers=total_rowers,
+        unverified_total=unverified_total,
+        weekly_target=COXSWAIN_WEEKLY_TARGET,
+        today=today,
+    )
+
+
+@coxswain_required
+@app.route("/coxswain/athlete/<path:username>")
+def coxswain_athlete(username: str):
+    username = username.strip()
+    if not username:
+        flash("Athlete not found.", "error")
+        return redirect(url_for("coxswain_workspace"))
+
+    today = date.today()
+    week_start, week_end = _week_bounds_mon_sun(today)
+    chart = pacing.load_chart()
+    workout_types = chart.get("workout_types", {})
+    profile = None
+    workouts: list[dict] = []
+    primary_goal = None
+    goal_plan = None
+
+    conn = get_db_connection()
+    if conn is None:
+        flash("Database unavailable.", "error")
+        return redirect(url_for("coxswain_workspace"))
+
+    try:
+        _ensure_user_profile_columns(conn)
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT username, two_k_seconds, six_k_seconds, is_coxswain, streak_count
+            FROM rowing_users WHERE username = %s
+            """,
+            (username,),
+        )
+        profile = cur.fetchone()
+        cur.close()
+
+        if not profile or profile.get("is_coxswain"):
+            flash("Athlete not found.", "error")
+            return redirect(url_for("coxswain_workspace"))
+
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT id, title, target_seconds, target_date, is_completed
+            FROM erg_goals WHERE username = %s
+            ORDER BY is_completed ASC, target_date ASC
+            """,
+            (username,),
+        )
+        goals = cur.fetchall()
+        cur.close()
+
+        for g in goals:
+            td = g.get("target_date")
+            g["days_left"] = (td - today).days if td else None
+
+        primary_goal = next((g for g in goals if not g.get("is_completed")), None)
+        profile_two_k = (
+            float(profile["two_k_seconds"])
+            if profile.get("two_k_seconds") is not None
+            else None
+        )
+        if primary_goal and profile_two_k is not None and primary_goal.get("target_seconds"):
+            goal_plan = pacing.build_goal_plan(
+                chart,
+                float(primary_goal["target_seconds"]),
+                profile_two_k,
+                primary_goal.get("days_left"),
+            )
+
+        workouts = _fetch_athlete_workouts(conn, username)
+
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT COUNT(*) AS c FROM erg_workouts
+            WHERE username = %s AND workout_date >= %s AND workout_date <= %s
+            """,
+            (username, week_start, week_end),
+        )
+        workouts_week = int(cur.fetchone()["c"])
+        cur.close()
+    except mysql.connector.Error as err:
+        if getattr(err, "errno", None) != 1146:
+            raise
+        flash(TRACKER_TABLES_MSG, "error")
+        return redirect(url_for("coxswain_workspace"))
+    finally:
+        conn.close()
+
+    verified_count = sum(1 for w in workouts if w.get("verified_at"))
+    unverified_count = len(workouts) - verified_count
+
+    return render_template(
+        "coxswain_athlete.html",
+        athlete=profile,
+        display_name=_display_name(username),
+        goals=goals,
+        primary_goal=primary_goal,
+        goal_plan=goal_plan,
+        workouts=workouts,
+        workout_types=workout_types,
+        workouts_week=workouts_week,
+        week_start=week_start,
+        week_end=week_end,
+        weekly_target=COXSWAIN_WEEKLY_TARGET,
+        verified_count=verified_count,
+        unverified_count=unverified_count,
+    )
+
+
+@coxswain_required
+@app.route("/coxswain/workouts/<int:workout_id>/verify", methods=["POST"])
+def coxswain_verify_workout(workout_id: int):
+    verifier = session["user"]
+    conn = get_db_connection()
+    if conn is None:
+        flash("Database unavailable.", "error")
+        return redirect(url_for("coxswain_workspace"))
+
+    redirect_to = request.form.get("next") or url_for("coxswain_workspace")
+    try:
+        _ensure_workout_verification_columns(conn)
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT id, username FROM erg_workouts WHERE id = %s",
+            (workout_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            flash("Workout not found.", "error")
+            return redirect(redirect_to)
+
+        cur.execute(
+            """
+            UPDATE erg_workouts
+            SET verified_at = NOW(), verified_by = %s
+            WHERE id = %s
+            """,
+            (verifier, workout_id),
+        )
+        conn.commit()
+        cur.close()
+        flash(f"Verified workout for {_display_name(row['username'])}.", "success")
+    except mysql.connector.Error as err:
+        conn.rollback()
+        print(f"Coxswain verify error: {err}")
+        flash("Could not verify workout.", "error")
+    finally:
+        conn.close()
+
+    return redirect(redirect_to)
+
+
+@coxswain_required
+@app.route("/coxswain/workouts/<int:workout_id>/unverify", methods=["POST"])
+def coxswain_unverify_workout(workout_id: int):
+    conn = get_db_connection()
+    if conn is None:
+        flash("Database unavailable.", "error")
+        return redirect(url_for("coxswain_workspace"))
+
+    redirect_to = request.form.get("next") or url_for("coxswain_workspace")
+    try:
+        _ensure_workout_verification_columns(conn)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE erg_workouts
+            SET verified_at = NULL, verified_by = NULL
+            WHERE id = %s
+            """,
+            (workout_id,),
+        )
+        conn.commit()
+        cur.close()
+        flash("Verification removed.", "info")
+    except mysql.connector.Error as err:
+        conn.rollback()
+        print(f"Coxswain unverify error: {err}")
+        flash("Could not update workout.", "error")
+    finally:
+        conn.close()
+
+    return redirect(redirect_to)
 
 
 # ── Admin — WhatsApp scan queue ──────────────────────────────────────────────

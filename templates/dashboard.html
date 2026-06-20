@@ -29,7 +29,7 @@
     <span class="stat-label">Current 2k</span>
     <span class="stat-value">{{ format_split(goal_plan.current_2k_seconds) }}</span>
     <span class="stat-hint">
-      {% if current_2k_source == 'profile' %}From profile{% else %}From recent workouts{% endif %}
+      From profile
       · Goal {{ format_split(goal_plan.goal_2k_seconds) }}
     </span>
   </article>
@@ -42,11 +42,16 @@
   <p style="color:var(--text-muted);font-size:0.95rem;margin-bottom:1rem;">We'll show target splits for each workout type and how much steady-state volume you need based on your current fitness.</p>
   <a class="btn-primary" href="{{ url_for('goal_new') }}">Set your first goal →</a>
 </section>
-{% elif not goal_plan.current_2k_seconds %}
+{% elif not predictions_enabled %}
 <section class="panel glass" style="border-left: 3px solid #f59e0b; padding: 1.4rem 1.5rem;">
-  <h2 style="font-size:1.1rem;margin-bottom:0.5rem;color:#fff;">Add your current 2k</h2>
-  <p style="color:var(--text-muted);font-size:0.95rem;margin-bottom:1rem;">Enter your latest 2k test time so we can compare your current splits to your goal and recommend steady volume.</p>
+  {% if is_coxswain %}
+  <h2 style="font-size:1.1rem;margin-bottom:0.5rem;color:#fff;">Training predictions unavailable</h2>
+  <p style="color:var(--text-muted);font-size:0.95rem;margin-bottom:1rem;">Erg-based split and volume recommendations don't apply to coxswains. Use the <a href="{{ url_for('coxswain_workspace') }}">team workspace</a> to review athlete logs and weekly compliance.</p>
+  {% else %}
+  <h2 style="font-size:1.1rem;margin-bottom:0.5rem;color:#fff;">Add your current 2k and 6k</h2>
+  <p style="color:var(--text-muted);font-size:0.95rem;margin-bottom:1rem;">Enter your latest erg test times so we can compare your current splits to your goal and recommend steady volume.</p>
   <a class="btn-primary" href="{{ url_for('profile') }}">Update profile →</a>
+  {% endif %}
 </section>
 {% else %}
 
@@ -149,9 +154,12 @@
     <h2>Quick links</h2>
   </div>
   <ul class="mini-list" style="gap:0.75rem">
+    {% if has_coxswain_access %}
+    <li><a href="{{ url_for('coxswain_workspace') }}" class="btn-link">Team workspace →</a></li>
+    {% endif %}
     <li><a href="{{ url_for('workout_new') }}" class="btn-link">Log a workout</a></li>
     <li><a href="{{ url_for('goals_list') }}" class="btn-link">View pacing chart & goals</a></li>
-    <li><a href="{{ url_for('profile') }}" class="btn-link">Update current 2k & WhatsApp</a></li>
+    <li><a href="{{ url_for('profile') }}" class="btn-link">Update profile & erg times</a></li>
   </ul>
 </section>
 

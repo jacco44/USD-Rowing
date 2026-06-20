@@ -8,9 +8,13 @@
 
 <p class="toolbar"><a class="btn-primary" href="{{ url_for('goal_new') }}">+ New goal</a></p>
 
-{% if not current_2k_source %}
+{% if not predictions_enabled and not is_coxswain %}
 <p class="panel glass" style="padding:1rem 1.25rem;font-size:0.9rem;color:var(--text-muted);margin-bottom:1.25rem;">
-  <a href="{{ url_for('profile') }}">Add your current 2k</a> to compare where you are now vs your goal splits.
+  <a href="{{ url_for('profile') }}">Add your current 2k and 6k</a> to compare where you are now vs your goal splits.
+</p>
+{% elif is_coxswain %}
+<p class="panel glass" style="padding:1rem 1.25rem;font-size:0.9rem;color:var(--text-muted);margin-bottom:1.25rem;">
+  Erg-based training predictions are off for coxswain accounts.
 </p>
 {% endif %}
 

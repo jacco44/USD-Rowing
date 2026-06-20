@@ -1,0 +1,145 @@
+{% extends "layout_app.html" %}
+{% block title %}Team workspace · USD Men's Rowing{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1 class="page-title">Team workspace</h1>
+  <p class="page-sub">
+    Review athlete logs, track weekly volume, and verify workout entries.
+  </p>
+</div>
+
+<section class="stat-grid" aria-label="Team summary">
+  <article class="stat-card glass">
+    <span class="stat-label">On track (≥{{ weekly_target }}/wk)</span>
+    <span class="stat-value" style="color:var(--success)">{{ on_track }}</span>
+    <span class="stat-hint">of {{ total_rowers }} rowers</span>
+  </article>
+  <article class="stat-card glass">
+    <span class="stat-label">Behind this week</span>
+    <span class="stat-value" style="color:{% if behind_count %}#f97316{% else %}var(--text-muted){% endif %}">{{ behind_count }}</span>
+    <span class="stat-hint">need more workouts</span>
+  </article>
+  <article class="stat-card glass">
+    <span class="stat-label">Unverified (30d)</span>
+    <span class="stat-value" style="color:{% if unverified_total %}#f59e0b{% else %}var(--text-muted){% endif %}">{{ unverified_total }}</span>
+    <span class="stat-hint">awaiting review</span>
+  </article>
+</section>
+
+<div class="cox-toolbar panel glass">
+  <div class="cox-week-nav">
+    <a href="{{ url_for('coxswain_workspace', week=prev_week_iso, filter=filter_status) }}" class="btn-sm btn-edit">← Prev</a>
+    <span class="cox-week-label">
+      Week of {{ week_start.strftime('%b %d') }} – {{ week_end.strftime('%b %d, %Y') }}
+      {% if week_start <= today <= week_end %}<span class="cox-week-current">current</span>{% endif %}
+    </span>
+    <a href="{{ url_for('coxswain_workspace', week=next_week_iso, filter=filter_status) }}" class="btn-sm btn-edit">Next →</a>
+  </div>
+  <div class="cox-filters">
+    {% set filters = [
+      ('all', 'All rowers'),
+      ('on_track', 'On track'),
+      ('behind', 'Behind'),
+      ('unverified', 'Needs verification'),
+    ] %}
+    {% for key, label in filters %}
+    <a href="{{ url_for('coxswain_workspace', week=week_start.isoformat(), filter=key) }}"
+       class="cox-filter-pill{% if filter_status == key %} active{% endif %}">{{ label }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+{% if athletes %}
+<div class="panel glass" style="padding:0;overflow:hidden;">
+  <table class="data-table cox-roster-table" style="margin:0">
+    <thead>
+      <tr>
+        <th style="padding-left:1.25rem">Athlete</th>
+        <th>This week</th>
+        <th>Steady vol.</th>
+        <th>Goal / 2k gap</th>
+        <th>Avg score (30d)</th>
+        <th>Unverified</th>
+        <th>Last log</th>
+        <th style="width:6rem"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in athletes %}
+      <tr class="{% if not a.meets_weekly_target %}cox-row-behind{% endif %}">
+        <td style="padding-left:1.25rem">
+          <span class="cox-athlete-name">{{ a.display_name }}</span>
+          <span class="cox-athlete-email">{{ a.username }}</span>
+        </td>
+        <td>
+          <span class="cox-week-count {% if a.meets_weekly_target %}cox-on-track{% else %}cox-behind{% endif %}">
+            {{ a.workouts_week }}/{{ weekly_target }}
+          </span>
+          {% if a.meets_weekly_target %}
+          <span class="cox-status-badge cox-status-ok">✓</span>
+          {% else %}
+          <span class="cox-status-badge cox-status-warn">{{ weekly_target - a.workouts_week }} short</span>
+          {% endif %}
+        </td>
+        <td style="font-variant-numeric:tabular-nums">
+          {% if a.steady_minutes_week %}{{ format_minutes(a.steady_minutes_week) }}{% else %}—{% endif %}
+        </td>
+        <td style="font-size:0.84rem">
+          {% if a.goal_title %}
+          <span class="cox-goal-title">{{ a.goal_title }}</span>
+          {% if a.gap_2k_seconds is not none %}
+          <span class="delta-{% if a.gap_2k_seconds <= 0 %}pos{% else %}neg{% endif %}">
+            {% if a.gap_2k_seconds > 0 %}+{% endif %}{{ "%.1f"|format(a.gap_2k_seconds) }}s
+          </span>
+          {% endif %}
+          {% elif a.two_k_seconds is not none %}
+          2k {{ format_split(a.two_k_seconds|float) }}
+          {% else %}
+          <span style="color:var(--text-muted)">No erg times</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if a.avg_pace_score_30d is not none %}
+          <span class="tier-pill tier-{{ a.avg_pace_score_30d|round|int }}">
+            {{ format_pace_score(a.avg_pace_score_30d) }}
+          </span>
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if a.unverified_count %}
+          <span class="cox-unverified-pill">{{ a.unverified_count }}</span>
+          {% else %}
+          <span style="color:var(--text-muted)">0</span>
+          {% endif %}
+        </td>
+        <td style="color:var(--text-muted);font-size:0.84rem">
+          {{ a.last_workout_date or '—' }}
+        </td>
+        <td>
+          <a href="{{ url_for('coxswain_athlete', username=a.username) }}" class="btn-sm btn-edit">Review →</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="panel glass empty-panel">
+  <p class="empty-hint">
+    {% if filter_status != 'all' %}
+    No rowers match this filter for the selected week.
+    {% else %}
+    No rower accounts yet — athletes register as rowers (not coxswains) to appear here.
+    {% endif %}
+  </p>
+</div>
+{% endif %}
+
+<p class="cox-footnote">
+  Weekly target: {{ weekly_target }} workouts (Mon–Sun).
+  Unverified counts are workouts from the last 30 days not yet marked by a coxswain.
+  {% if is_admin %}
+  <a href="{{ url_for('admin_scans') }}">Review WhatsApp scans →</a>
+  {% endif %}
+</p>
+{% endblock %}
